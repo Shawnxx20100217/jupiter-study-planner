@@ -1,5 +1,7 @@
 # Jupiter 作业管家
 
+<img src="assets/jupiter-icon.png" alt="Jupiter 作业管家图标" width="128" height="128">
+
 把 Jupiter Ed 作业整理为动态优先队列。每天课程和自习时间可以不同；你说“现在有 20 分钟”，再安排这一段能推进的任务，不要求固定的每日学习表。
 
 **第一次用或发给朋友，请从[中文上手指南](GETTING_STARTED.zh-CN.md)开始。** 这是需要自行配置的本机工具原型，当前完整流程面向 macOS、Chrome 和 Python 3.12。接收者要用自己的 Jupiter 学生账户登录；跨学校页面尚未完成验证，不承诺下载即用。

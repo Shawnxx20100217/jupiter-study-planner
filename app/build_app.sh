@@ -28,6 +28,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 if command -v codesign >/dev/null 2>&1; then
+  # Finder metadata on copied assets can make ad-hoc signing fail on macOS.
+  xattr -cr "$OUT" 2>/dev/null || true
   codesign --force --deep --sign - "$OUT" >/dev/null 2>&1 || true
 fi
 printf '%s\n' "$OUT"
