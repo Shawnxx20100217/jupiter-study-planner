@@ -1,0 +1,95 @@
+import json
+from pathlib import Path
+import stat
+import sys
+import tempfile
+import unittest
+import zipfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from init_instance import initialize
+from package_share import package
+
+
+IDENTITY = {"expected_student": "Example Student", "expected_school_year": "Example School 2026-27",
+            "expected_term": "1st Semester", "expected_courses": ["Mathematics", "English"],
+            "school_timezone": "Asia/Shanghai"}
+
+
+class InstanceTests(unittest.TestCase):
+    def test_new_instance_is_private_unsynced_and_collector_compatible(self):
+        from jupiter_collector import config_at
+        from jupiter_runtime import instance_config
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            result = initialize(base / "personal", IDENTITY, base / "plugin")
+            config = config_at(result["instance"])
+            _, state, report, _ = instance_config(result["instance"])
+            self.assertEqual(config["expected_courses"], IDENTITY["expected_courses"])
+            self.assertEqual(state, (base / "personal/state").resolve())
+            self.assertEqual(report, (base / "personal/reports/study-plan.md").resolve())
+            self.assertEqual(stat.S_IMODE(Path(result["instance"]).stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o700)
+            self.assertFalse((state / "state.json").exists())
+            self.assertFalse((state / "run-status.json").exists())
+            self.assertFalse(result["schedule_enabled"])
+
+    def test_existing_data_never_overwritten(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp) / "personal"
+            initialize(directory, IDENTITY, Path(temp) / "plugin")
+            instance = directory / "state/local-instance.json"
+            before = instance.read_bytes()
+            with self.assertRaises(ValueError):
+                initialize(directory, {**IDENTITY, "expected_student": "Someone Else"}, Path(temp) / "plugin")
+            self.assertEqual(before, instance.read_bytes())
+
+    def test_existing_report_directory_not_reused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp) / "personal"
+            (directory / "reports").mkdir(parents=True)
+            (directory / "reports/study-plan.md").write_text("Private report")
+            with self.assertRaises(ValueError):
+                initialize(directory, IDENTITY, Path(temp) / "plugin")
+            self.assertFalse((directory / "state").exists())
+
+    def test_plugin_data_and_bad_identity_rejected_before_write(self):
+        with tempfile.TemporaryDirectory() as temp:
+            plugin = Path(temp) / "plugin"
+            for data, identity in ((plugin / "state", IDENTITY),
+                                   (Path(temp) / "personal", {**IDENTITY, "school_timezone": "not/a-zone"}),
+                                   (Path(temp) / "personal", {**IDENTITY, "expected_courses": ["Math", "Math"]})):
+                with self.assertRaises(ValueError):
+                    initialize(data, identity, plugin)
+                self.assertFalse(data.exists())
+
+
+class PackageTests(unittest.TestCase):
+    def test_archive_uses_allowlist_and_omits_private_files_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "plugin"
+            allowed = {".codex-plugin/plugin.json": "{}", "README.md": "Instructions",
+                       "scripts/main.py": "pass", "tests/test_main.py": "pass",
+                       "examples/local-instance.example.json": "{}", "assets/icon.svg": "<svg/>"}
+            blocked = {"state/state.json": "private", "scripts/state.json": "private",
+                       "scripts/__pycache__/main.pyc": "compiled", "reports/study-plan.html": "private",
+                       "assets/study-plan.html": "private", "examples/collector-session.json": "secret",
+                       "examples/.hidden.json": "secret", "test.zip": "zip", ".codex-plugin/secret.json": "secret"}
+            for name, data in {**allowed, **blocked}.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(data)
+            (root / "scripts/link.py").symlink_to(root / "scripts/main.py")
+            archive = Path(temp) / "share.zip"
+            self.assertEqual(package(root, archive), len(allowed))
+            with zipfile.ZipFile(archive) as handle:
+                self.assertEqual(set(handle.namelist()), {"jupiter-study-planner/" + name for name in allowed})
+
+    def test_manifest_required(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaises(ValueError):
+                package(temp, Path(temp) / "share.zip")
+
+
+if __name__ == "__main__":
+    unittest.main()

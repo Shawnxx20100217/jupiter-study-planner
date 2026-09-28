@@ -1,0 +1,35 @@
+# Python caches and local tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# macOS metadata and local build output
+.DS_Store
+*.app/
+*.zip
+
+# Local reports and runtime data (keep outside this repository)
+reports/
+state/
+work/
+browser-profile/
+*.html
+!assets/dashboard.html
+*.md~
+*.ics
+*.plist
+
+# Local configuration and credentials
+local-instance.json
+collector-session.json
+run-status.json
+notifications.json
+notification-state.json
+pending-review.json
+raw-latest.json
+snapshot-latest.json
+import-metadata.json

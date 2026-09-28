@@ -1,0 +1,2 @@
+# No API key or model service is used. The supported setup uses macOS, Python 3.12 and Google Chrome.
+scrapling[fetchers]==0.4.15

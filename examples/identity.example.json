@@ -1,0 +1,7 @@
+{
+  "expected_student": "Example Student",
+  "expected_school_year": "Example School 2026-27",
+  "expected_term": "1st Semester",
+  "expected_courses": ["Example Mathematics", "Example English"],
+  "school_timezone": "Asia/Shanghai"
+}
