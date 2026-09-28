@@ -7,7 +7,7 @@ import zipfile
 
 ROOT_FILES = {"README.md", "GETTING_STARTED.zh-CN.md", "requirements-collector.txt", "LICENSE", "LICENSE.md"}
 EXTENSIONS = {
-    "app": {".swift", ".sh", ".plist"},
+    "app": {".swift", ".sh", ".plist", ".icns"},
     "scripts": {".py"},
     "tests": {".py", ".html", ".json"},
     "skills": {".md"},
