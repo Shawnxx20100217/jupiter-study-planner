@@ -94,7 +94,12 @@ class TickTickClient:
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
             detail = raw[:240]
-            code = "unauthorized" if exc.code == 401 else "rate_limited" if exc.code == 429 else "api_error"
+            lowered = detail.lower()
+            capacity = exc.code in {400, 413, 422} and any(word in lowered for word in (
+                "capacity", "limit", "maximum", "max ", "too many", "exceed"))
+            code = ("capacity" if capacity else
+                    "unauthorized" if exc.code == 401 else
+                    "rate_limited" if exc.code == 429 else "api_error")
             raise TickTickError(f"TickTick 请求失败（{exc.code}）{detail}", status=exc.code, code=code) from exc
         except URLError as exc:
             raise TickTickError("无法连接 TickTick，请检查网络或 API 地址", code="network") from exc
@@ -196,7 +201,7 @@ def _config(config):
     nested = config.get("ticktick") if isinstance(config.get("ticktick"), dict) else {}
     merged = dict(nested)
     for key in ("ticktick_enabled", "ticktick_project_id", "ticktick_project_name", "ticktick_token_file",
-                "ticktick_api_base", "ticktick_reminder_minutes"):
+                "ticktick_api_base", "ticktick_reminder_minutes", "ticktick_project_ids"):
         if key in config:
             merged[key.removeprefix("ticktick_")] = config[key]
     return merged
@@ -232,6 +237,64 @@ def _find_project(projects, project_id=None, project_name=None):
     return None
 
 
+def _project_ids(config, default_id=None):
+    """Return every configured destination project, preserving its order.
+
+    The first project is the historical/default destination.  Additional
+    projects are useful when a TickTick list is split across the service's
+    per-project task limit.  Accept both the nested ``project_ids`` spelling
+    and the older top-level ``ticktick_project_ids`` spelling.
+    """
+    cfg = _config(config)
+    values = cfg.get("project_ids")
+    if values is None:
+        values = cfg.get("ticktick_project_ids")
+    if values is None:
+        values = []
+    if isinstance(values, dict):
+        values = list(values.values())
+    elif isinstance(values, str):
+        values = [values]
+    ids = []
+    for value in ([default_id] if default_id else []) + list(values or []):
+        if isinstance(value, dict):
+            value = value.get("id") or value.get("project_id")
+        if value and str(value) not in ids:
+            ids.append(str(value))
+    return ids
+
+
+def _marker_key(line):
+    """Normalize both ``jupiter:id`` and ``Jupiter: id`` task markers."""
+    text = str(line or "").strip()
+    if ":" not in text:
+        return None
+    prefix, value = text.split(":", 1)
+    if prefix.strip().lower() != "jupiter":
+        return None
+    value = value.strip()
+    return "jupiter:" + value if value else None
+
+
+def _task_marker(task):
+    for line in str((task or {}).get("content", "")).splitlines():
+        marker = _marker_key(line)
+        if marker:
+            return marker
+    return None
+
+
+def _capacity_error(error):
+    """Recognize service responses that indicate a task/list capacity limit."""
+    if not isinstance(error, TickTickError):
+        return False
+    if error.code == "capacity":
+        return True
+    detail = str(error).lower()
+    return error.status in {400, 413, 422} and any(word in detail for word in (
+        "capacity", "limit", "maximum", "max ", "too many", "exceed"))
+
+
 def _remote_completed(value):
     return value in {2, "2", "completed", "COMPLETED", True}
 
@@ -262,7 +325,8 @@ def sync_plan(plan, config, state_dir, instance_path=None, now=None, dry_run=Fal
     token = load_token(config, instance_path)
     if not token:
         return {"ok": False, "enabled": True, "skipped": True, "error_code": "ticktick_not_configured", "message": "TickTick 尚未配置 API token。", "created": 0, "updated": 0, "completed": 0}
-    if not cfg.get("project_id") and not cfg.get("project_name"):
+    configured_project_ids = _project_ids(config, cfg.get("project_id"))
+    if not configured_project_ids and not cfg.get("project_name"):
         return {"ok": False, "enabled": True, "skipped": True, "error_code": "ticktick_project_missing", "message": "TickTick 尚未指定目标项目。", "created": 0, "updated": 0, "completed": 0}
     if dry_run:
         return {"ok": True, "enabled": True, "dry_run": True, "created": 0, "updated": 0, "completed": 0,
@@ -273,27 +337,29 @@ def sync_plan(plan, config, state_dir, instance_path=None, now=None, dry_run=Fal
     state = read_json(mapping_path, {"version": 1, "tasks": {}}) or {"version": 1, "tasks": {}}
     state.setdefault("tasks", {})
     projects = client.list_projects()
-    project = _find_project(projects, cfg.get("project_id"), cfg.get("project_name"))
+    default_project_id = cfg.get("project_id") or (configured_project_ids[0] if configured_project_ids else None)
+    project = _find_project(projects, default_project_id, cfg.get("project_name"))
     if not project:
         raise TickTickError("找不到配置的 TickTick 项目", code="project_not_found")
     project_id = str(project["id"])
+    configured_project_ids = _project_ids(config, project_id)
     existing = {}
     inventory_read_ok = True
     inventory_error = None
-    try:
-        data = client.project_data(project_id) or {}
-        if not isinstance(data, dict):
-            raise TickTickError("TickTick 项目任务清单格式无法识别", code="invalid_response")
-        for task in data.get("tasks", []):
-            marker = "jupiter:"
-            for line in str(task.get("content", "")).splitlines():
-                if line.startswith(marker):
-                    existing[line] = task
-    except TickTickError as error:
-        # Without a reliable inventory, do not create an unmapped task: a
-        # successful create with a lost response could otherwise duplicate it.
-        inventory_read_ok = False
-        inventory_error = error
+    for inventory_project_id in configured_project_ids:
+        try:
+            data = client.project_data(inventory_project_id) or {}
+            if not isinstance(data, dict):
+                raise TickTickError("TickTick 项目任务清单格式无法识别", code="invalid_response")
+            for task in data.get("tasks", []):
+                marker = _task_marker(task)
+                if marker and marker not in existing:
+                    existing[marker] = {"task": task, "project_id": str(inventory_project_id)}
+        except TickTickError as error:
+            # Without a reliable inventory, do not create an unmapped task: a
+            # successful create with a lost response could otherwise duplicate it.
+            inventory_read_ok = False
+            inventory_error = error
     created = updated = completed = remote_completed = local_updated = 0
     deferred = 0
     warnings = []
@@ -302,6 +368,19 @@ def sync_plan(plan, config, state_dir, instance_path=None, now=None, dry_run=Fal
                          "message": "TickTick 项目任务清单读取失败，本轮暂停无映射任务的新建。",
                          "error_type": type(inventory_error).__name__})
     results = []
+    capacity_hit = None
+
+    def checkpoint():
+        """Persist the mapping after each remote mutation.
+
+        This is deliberately small and synchronous: if a later task fails,
+        already-created/updated TickTick tasks remain recoverable and the next
+        run can discover them without creating duplicates.
+        """
+        state["project_id"] = project_id
+        state["project_ids"] = list(configured_project_ids)
+        atomic_json(mapping_path, state)
+
     all_items = []
     seen_ids = set()
     for item in list(plan.get("queue", [])) + list(plan.get("excluded", [])):
@@ -314,21 +393,29 @@ def sync_plan(plan, config, state_dir, instance_path=None, now=None, dry_run=Fal
         jupiter_id = str(item["id"])
         marker = "jupiter:" + jupiter_id
         record = state["tasks"].get(jupiter_id, {})
+        task_project_id = str(item.get("ticktick_project_id") or
+                             item.get("project_id") or
+                             record.get("ticktick_project_id") or
+                             record.get("project_id") or project_id)
         remote_id = record.get("ticktick_task_id")
         if not remote_id and marker in existing:
-            remote_id = existing[marker].get("id")
+            remote_id = existing[marker]["task"].get("id")
+            task_project_id = existing[marker]["project_id"]
         source_status = item.get("source_status", item.get("status", "unknown"))
         personal_status = item.get("personal_status") or _local_personal_status(state_dir, jupiter_id)
         remote_status = None
         if remote_id:
             try:
-                remote = client.get_task(project_id, remote_id) or {}
+                remote = client.get_task(task_project_id, remote_id) or {}
                 remote_status = remote.get("status")
             except TickTickError as error:
                 if error.status == 404:
                     # A confirmed remote deletion is safe to recover from; a
                     # transient failure keeps the mapping authoritative.
-                    remote_id = existing.get(marker, {}).get("id")
+                    replacement = existing.get(marker)
+                    remote_id = (replacement or {}).get("task", {}).get("id")
+                    if replacement:
+                        task_project_id = replacement["project_id"]
                 else:
                     warnings.append({"code": "remote_task_unavailable", "task_id": jupiter_id,
                                      "message": "TickTick 单项状态暂时无法读取，本轮保留原映射。",
@@ -338,20 +425,27 @@ def sync_plan(plan, config, state_dir, instance_path=None, now=None, dry_run=Fal
             if source_status not in {"submitted", "completed"}:
                 local_updated += int(_set_local_personal_status(state_dir, jupiter_id, "completed"))
                 remote_completed += 1
-            state["tasks"][jupiter_id] = {**record, "ticktick_task_id": str(remote_id), "project_id": project_id,
+            state["tasks"][jupiter_id] = {**record, "ticktick_task_id": str(remote_id), "project_id": task_project_id,
                                              "source_status": source_status, "remote_status": "completed"}
             continue
         if source_status in {"submitted", "completed"} or personal_status == "completed":
             if remote_id:
-                client.complete_task(project_id, remote_id)
+                try:
+                    client.complete_task(task_project_id, remote_id)
+                except TickTickError as error:
+                    if _capacity_error(error):
+                        capacity_hit = error
+                        break
+                    raise
                 completed += 1
-                state["tasks"][jupiter_id] = {**record, "ticktick_task_id": str(remote_id), "project_id": project_id,
+                state["tasks"][jupiter_id] = {**record, "ticktick_task_id": str(remote_id), "project_id": task_project_id,
                                                  "source_status": source_status, "remote_status": "completed",
                                                  "completed_at": datetime.now(timezone.utc).isoformat()}
+                checkpoint()
             # Do not create a new remote task solely for an already-finished
             # local item; if it is reopened later it returns to the queue.
             continue
-        payload = task_payload(item, plan, project_id, cfg)
+        payload = task_payload(item, plan, task_project_id, cfg)
         if not remote_id and not inventory_read_ok:
             deferred += 1
             results.append({"jupiter_id": jupiter_id, "action": "deferred_inventory_unavailable"})
@@ -360,27 +454,48 @@ def sync_plan(plan, config, state_dir, instance_path=None, now=None, dry_run=Fal
         if remote_id and record.get("payload_hash") == digest:
             action = "unchanged"
         elif remote_id:
-            client.update_task(remote_id, payload)
+            try:
+                client.update_task(remote_id, payload)
+            except TickTickError as error:
+                if _capacity_error(error):
+                    capacity_hit = error
+                    break
+                raise
             updated += 1
             action = "updated"
         else:
-            response = client.create_task(payload) or {}
+            try:
+                response = client.create_task(payload) or {}
+            except TickTickError as error:
+                if _capacity_error(error):
+                    capacity_hit = error
+                    break
+                raise
             remote_id = response.get("id") or response.get("taskId")
             if not remote_id:
                 raise TickTickError("TickTick 创建任务后没有返回任务 ID", code="invalid_response")
             created += 1
             action = "created"
-        state["tasks"][jupiter_id] = {"ticktick_task_id": str(remote_id), "project_id": project_id,
+        state["tasks"][jupiter_id] = {"ticktick_task_id": str(remote_id), "project_id": task_project_id,
                                        "payload_hash": digest, "source_status": source_status,
                                        "updated_at": datetime.now(timezone.utc).isoformat()}
+        checkpoint()
         results.append({"jupiter_id": jupiter_id, "ticktick_task_id": str(remote_id), "action": action})
+    if capacity_hit:
+        warnings.append({"code": "ticktick_capacity",
+                         "message": "TickTick 已达到任务容量限制；已保留本轮已写入的映射，未删除任何任务。",
+                         "error_type": type(capacity_hit).__name__})
     state["project_id"] = project_id
+    state["project_ids"] = list(configured_project_ids)
     state["last_sync"] = (now or datetime.now(timezone.utc)).isoformat()
-    state["last_error"] = None
+    state["last_error"] = str(capacity_hit) if capacity_hit else None
     atomic_json(mapping_path, state)
-    return {"ok": True, "enabled": True, "created": created, "updated": updated, "completed": completed,
+    return {"ok": not bool(capacity_hit), "enabled": True, "created": created, "updated": updated, "completed": completed,
             "deferred": deferred, "remote_completed": remote_completed, "local_updated": local_updated,
-            "warnings": warnings, "project_id": project_id, "results": results}
+            "warnings": warnings, "project_id": project_id, "project_ids": configured_project_ids,
+            "error_code": "capacity" if capacity_hit else None,
+            "message": str(capacity_hit) if capacity_hit else None,
+            "results": results}
 
 
 def sync_instance(instance_path, now=None, dry_run=False):

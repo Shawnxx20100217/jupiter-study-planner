@@ -148,6 +148,70 @@ class TickTickTests(unittest.TestCase):
         self.assertEqual(result["local_updated"], 1)
         self.assertEqual(state["tasks"]["math-1"]["personal"]["status"], "completed")
 
+    def test_inventory_scans_configured_overflow_and_accepts_connector_marker(self):
+        class SplitClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.lookups = []
+
+            def list_projects(self):
+                return [{"id": "p1", "name": "Jupiter 作业", "closed": False},
+                        {"id": "p2", "name": "Jupiter 作业 2", "closed": False}]
+
+            def project_data(self, project_id):
+                if project_id == "p2":
+                    return {"tasks": [{"id": "overflow-1", "content": "Jupiter: math-1\nMath · Worksheet"}]}
+                return {"tasks": []}
+
+            def get_task(self, project_id, task_id):
+                self.lookups.append((project_id, task_id))
+                return {"id": task_id, "status": 0}
+
+        client = SplitClient()
+        config = {"ticktick_enabled": True, "ticktick_project_id": "p1",
+                  "ticktick_project_ids": ["p1", "p2"],
+                  "ticktick_token_file": str(self.root / "token")}
+        (self.root / "token").write_text("secret")
+        result = tick.sync_plan(self.plan, config, self.root, client=client)
+        self.assertEqual(result["created"], 0)
+        self.assertEqual(client.lookups, [("p2", "overflow-1")])
+        state = json.loads((self.root / "ticktick-state.json").read_text())
+        self.assertEqual(state["tasks"]["math-1"]["project_id"], "p2")
+
+    def test_mapping_checkpoint_survives_later_mutation_failure(self):
+        class FailsSecondCreate(FakeClient):
+            def create_task(self, payload):
+                if len(self.created) == 1:
+                    raise tick.TickTickError("offline", status=503, code="api_error")
+                return super().create_task(payload)
+
+        plan = {"timezone": "Asia/Shanghai", "queue": [self.plan["queue"][0],
+                dict(self.plan["queue"][0], id="math-2", title="Second") ]}
+        client = FailsSecondCreate()
+        config = {"ticktick_enabled": True, "ticktick_project_id": "p1",
+                  "ticktick_token_file": str(self.root / "token")}
+        (self.root / "token").write_text("secret")
+        with self.assertRaises(tick.TickTickError):
+            tick.sync_plan(plan, config, self.root, client=client)
+        state = json.loads((self.root / "ticktick-state.json").read_text())
+        self.assertEqual(state["tasks"]["math-1"]["ticktick_task_id"], "t1")
+        self.assertNotIn("math-2", state["tasks"])
+
+    def test_capacity_error_stops_without_deleting_and_reports_capacity(self):
+        class FullClient(FakeClient):
+            def create_task(self, payload):
+                raise tick.TickTickError("task limit reached", status=400, code="capacity")
+
+        client = FullClient()
+        config = {"ticktick_enabled": True, "ticktick_project_id": "p1",
+                  "ticktick_token_file": str(self.root / "token")}
+        (self.root / "token").write_text("secret")
+        result = tick.sync_plan(self.plan, config, self.root, client=client)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "capacity")
+        self.assertEqual(result["created"], 0)
+        self.assertEqual(result["warnings"][0]["code"], "ticktick_capacity")
+
 
 if __name__ == "__main__":
     unittest.main()

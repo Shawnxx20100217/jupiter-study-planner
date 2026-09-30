@@ -6,7 +6,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import jupiter_collector as collector
@@ -159,6 +159,12 @@ class ConfigAndLockTests(unittest.TestCase):
             collector.config_at(self.instance)
         self.assertEqual(raised.exception.code, "courses_not_configured")
 
+    def test_browser_preference_cannot_turn_string_false_into_system_chrome(self):
+        self.save({**self.config, "real_chrome": "false"})
+        with self.assertRaises(collector.CollectorError) as raised:
+            collector.config_at(self.instance)
+        self.assertEqual(raised.exception.code, "invalid_browser_config")
+
     def test_relative_paths_resolved_against_instance_directory(self):
         self.save()
         value = collector.config_at(self.instance)
@@ -193,6 +199,58 @@ class ConfigAndLockTests(unittest.TestCase):
                 raise RuntimeError("Synthetic failure")
         with collector.browser_lock(config):
             pass
+
+
+class BrowserStartupTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="jupiter-browser-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.instance = self.root / "instance.json"
+        self.config = {"expected_student": "Fictional Student", "expected_school_year": "School 2026-27",
+                       "expected_courses": ["Course A"], "state_dir": str(self.root),
+                       "profile_dir": str(self.root / "profile")}
+        self.saved = {"entry_url": collector.LOGIN_URL, "user_agent": "Dedicated Jupiter Browser",
+                      "cookies": [{"name": "session", "value": "fixture", "domain": "login.jupitered.com"}]}
+        self.session_file = self.root / "collector-session.json"
+        self.session_file.write_text(json.dumps(self.saved))
+        self.page = SimpleNamespace(url=collector.LOGIN_URL, context=Mock(), evaluate=Mock(return_value="Bundled Browser"))
+        self.page.context.storage_state.return_value = {"cookies": self.saved["cookies"]}
+        self.factory = MagicMock()
+        self.session = self.factory.return_value.__enter__.return_value
+        self.session.fetch.side_effect = lambda url, page_setup, page_action: (page_setup(self.page), page_action(self.page))
+        modules = {"scrapling.fetchers": SimpleNamespace(DynamicSession=self.factory),
+                   "scrapling.engines.constants": SimpleNamespace(DEFAULT_ARGS=[], HARMFUL_ARGS=[])}
+        for stub in (patch.dict(sys.modules, modules), patch.object(collector, "ensure_profile_idle"),
+                     patch.object(collector, "workflow", return_value={"course_count": 1}),
+                     patch.object(collector.logging, "disable")):
+            stub.start()
+            self.addCleanup(stub.stop)
+
+    def run_collect(self):
+        self.instance.write_text(json.dumps(self.config))
+        return collector.collect(self.instance)
+
+    def test_default_uses_bundled_browser_and_restores_dedicated_session(self):
+        self.assertEqual(self.run_collect(), {"course_count": 1})
+        self.assertFalse(self.factory.call_args.kwargs["real_chrome"])
+        self.assertTrue(self.factory.call_args.kwargs["headless"])
+        self.assertEqual(self.factory.call_args.kwargs["user_data_dir"], str(self.root / "profile"))
+        self.page.context.add_cookies.assert_called_once_with(self.saved["cookies"])
+        self.assertEqual(self.session_file.stat().st_mode & 0o777, 0o600)
+
+    def test_system_chrome_requires_explicit_boolean_opt_in(self):
+        self.config["real_chrome"] = True
+        self.run_collect()
+        self.assertTrue(self.factory.call_args.kwargs["real_chrome"])
+
+    def test_browser_start_failure_preserves_saved_session_without_fallback(self):
+        self.factory.return_value.__enter__.side_effect = RuntimeError("Browser unavailable")
+        with self.assertRaises(collector.CollectorError) as raised:
+            self.run_collect()
+        self.assertEqual(raised.exception.code, "browser_unavailable")
+        self.factory.assert_called_once()
+        self.assertEqual(json.loads(self.session_file.read_text()), self.saved)
 
 
 class IdentityTests(unittest.TestCase):
