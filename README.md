@@ -93,11 +93,37 @@ Done 勾选、未评分和实际提交分别处理。新发现的历史未评分
 /PRIVATE/jupiter-runtime/bin/python /PLUGIN/scripts/jupiter_runtime.py generate-launch-agent --instance /PRIVATE/jupiter-state/local-instance.json --python /PRIVATE/jupiter-runtime/bin/python --output /PRIVATE/jupiter-sync.plist
 ```
 
-配置为每天 **本机当地时间 07:00、17:00**，不是强制北京时间。用户授权启用并完成真实运行验收后，由 launchd 调用 Python；定时运行没有模型调用，也无需 Codex 保持打开。Mac 必须可运行、会话有效且能访问网络；不保证睡眠、关机或登录失效期间准时执行。生成配置不代表已启用。
+同步配置为每天 **本机当地时间 07:00、17:00**，不是强制北京时间。用户授权启用并完成真实运行验收后，由 launchd 调用 Python；定时运行没有模型调用，也无需 Codex 保持打开。Mac 必须可运行、会话有效且能访问网络；不保证睡眠、关机或登录失效期间准时执行。生成配置不代表已启用。
 
-提醒会写入本地报告、`pending-review.json` 和 `notifications.json`；在当前 macOS App 中，新增作业、状态变化或读取失败还会显示系统通知（可在实例配置中关闭）。没有邮件或手机推送。重复内容和相同故障不重复新增提醒。`run-status.json` 记录最近尝试、最近成功及错误；`notification-state.json` 用于去重。通知日期从 Today 变为 Yesterday 不被当作新内容。
+如果老师经常在白天临时布置作业，推荐把同步 plist 生成为 `--mode watch`：它每 15 分钟读取一次 Jupiter，电脑唤醒时立即补查；没有变化时不会新增通知，也不会重复创建 TickTick 任务。它仍然受 Jupiter 登录状态、网络和电脑睡眠影响，不能代替服务器推送。
 
-真实作业、进度、来源证据和浏览器 profile 放在私密实例目录。可分享插件只含代码、文档和虚构测试。没有已验证的学生端 Jupiter iCal/API 连接器；插件以 Jupiter 自带 Calendar 和课程表为事实来源，再生成本地只读 `.ics`，不向 Jupiter 提交作业、点击 Done，也不向第三方日历写入数据。
+截止提醒由第二个本机 launchd 任务负责。它每 30 分钟读取最近一次成功同步的本地计划，不打开 Jupiter 浏览器，默认在截止前 **24 小时、2 小时、30 分钟**各提醒一次。生成命令是在同步命令上加 `--mode remind` 并输出另一个 plist。截止日期只有日期时，提醒文字会标明“日期型截止”；不会把 Jupiter 未提供的具体钟点伪造成事实。
+
+提醒会写入本地报告、`pending-review.json` 和 `notifications.json`；当前 macOS App 及本机提醒任务会显示系统通知（可在实例配置中关闭）。没有邮件或手机推送。重复内容、相同故障和同一任务的同一提醒档位不会重复通知。`run-status.json` 记录最近尝试、最近成功及错误；`notification-state.json` 用于去重。通知日期从 Today 变为 Yesterday 不被当作新内容。
+
+## TickTick 输出
+
+如果你希望由 TickTick 负责提醒和任务界面，可以打开实例配置中的 `ticktick_enabled`，填写 TickTick 项目和一个只放在本机、权限为 600 的 API token 文件：
+
+```json
+{
+  "ticktick_enabled": true,
+  "ticktick_api_base": "https://api.ticktick.com/open/v1",
+  "ticktick_project_id": "你的 TickTick 项目 ID",
+  "ticktick_token_file": "/PRIVATE/jupiter-state/ticktick-token",
+  "ticktick_reminder_minutes": [1440, 120, 30]
+}
+```
+
+也可以先用环境变量 `TICKTICK_ACCESS_TOKEN` 做一次验证。随后运行：
+
+```bash
+/PRIVATE/jupiter-runtime/bin/python /PLUGIN/scripts/jupiter_runtime.py sync-ticktick --instance /PRIVATE/jupiter-state/local-instance.json
+```
+
+同步以 Jupiter 为作业事实源、以 TickTick 为任务和提醒界面：同一个 Jupiter 作业只会对应一个 TickTick 任务，截止日期或标题变化会更新它。TickTick 勾选完成后，下一次 15 分钟同步会先读取该状态，再在同一轮 Jupiter 采集中写入个人 Done；本地看板勾选后，下一次同步会完成对应 TickTick 任务。Jupiter 标记为已提交或已完成时也会完成对应 TickTick 任务；不会因为一次 Jupiter 读取失败或部分页面缺失而删除 TickTick 任务。当前同步“勾上完成”事件，取消勾选不会自动重开远端任务。默认不点击学校 Jupiter 网页的 Done；实例显式开启 `jupiter_done_writeback_enabled` 后，才会把本地个人完成状态写回 Jupiter 的 To Do 勾选框，仍不提交作业或改分数。TickTick 项目负责最终提醒，因此本机截止弹窗可以在连接验证成功后关闭。国际版默认使用 `api.ticktick.com`；中国滴答清单请改用 `https://api.dida365.com/open/v1`，并使用对应区域的 token。
+
+真实作业、进度、来源证据和浏览器 profile 放在私密实例目录。可分享插件只含代码、文档和虚构测试。没有已验证的学生端 Jupiter iCal/API 连接器；插件以 Jupiter 自带 Calendar 和课程表为事实来源，再生成本地 `.ics`。默认不写回 Jupiter；显式启用 `jupiter_done_writeback_enabled` 后只同步个人 Done 标记，不提交作业、不改分数。
 
 更多语义见[读取约定](references/jupiter-reading.md)。从插件目录运行回归测试：
 

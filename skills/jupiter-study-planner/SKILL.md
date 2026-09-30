@@ -29,7 +29,7 @@ description: 运行已配置的 Jupiter Ed 独立同步，汇总作业截止日�
 
 **指定空闲窗口：** 只有用户确认的可用时间写入 availability。可信 Calendar 课时可作为 busy，课间空档不自动成为 windows。多门课显示同一 Period 等异常须保留核实，不推断自习或“next class”。
 
-**记录进度：** 更新 personal 后重排，优先使用用户反馈的剩余量。投入 15 分钟不必然让剩余量减少 15 分钟。只改本地状态，不点击 Jupiter Done 或提交作业。
+**记录进度：** 更新 personal 后重排，优先使用用户反馈的剩余量。投入 15 分钟不必然让剩余量减少 15 分钟。默认只改本地状态；若实例显式开启 `jupiter_done_writeback_enabled`，可以同步个人 Jupiter Done 标记，但仍不提交作业。
 
 ## 命令
 
@@ -69,6 +69,10 @@ description: 运行已配置的 Jupiter Ed 独立同步，汇总作业截止日�
 "$JUPITER_PYTHON" "$JUPITER_PLUGIN_ROOT/scripts/jupiter_runtime.py" generate-launch-agent --instance "$JUPITER_INSTANCE" --python "$JUPITER_PYTHON" --output "/PRIVATE/jupiter-sync.plist"
 ```
 
-此命令只生成每天本机当地时间 07:00/17:00 的 plist，**不启用**。启用与成功验收分别报告，不能把生成结果说成正在运行。启用后由 launchd 直接调用 Python，无需 Codex 打开、不用模型；Mac 需可运行、网络可用、专用会话有效。不保证睡眠、关机或登录过期时准点执行。
+此命令只生成每天本机当地时间 07:00/17:00 的同步 plist，**不启用**。截止提醒另生成一份 `--mode remind` plist；它每 30 分钟读取最近一次成功计划，不打开浏览器。启用与成功验收分别报告，不能把生成结果说成正在运行。启用后由 launchd 直接调用 Python，无需 Codex 打开、不用模型；Mac 需可运行、网络可用、专用会话有效。不保证睡眠、关机或登录过期时准点执行。
 
-目前提醒是本地报告、`pending-review.json` 和 `notifications.json`，没有系统弹窗、邮件或手机推送。`notification-state.json` 去重实质变化与同一故障；`run-status.json` 保留最近尝试、最近成功及错误。数据未变不新增提醒，通知相对日期变化不算内容变化。失败保留旧数据、不刷新成功时间。
+若用户强调及时性，可生成 `--mode watch` plist。它每 15 分钟重新读取 Jupiter，前台 App 打开时也会检查；仅在内容变化时新增通知和下游同步。Jupiter 没有可靠的服务器推送时，不能承诺实时到达。
+
+目前提醒包括本地报告、`pending-review.json`、`notifications.json` 和截止前的 macOS 系统弹窗；默认提前 24 小时、2 小时、30 分钟各一次。截止日期只有日期时会明确标注日期型截止，不臆造具体钟点；提醒基于最近一次成功读取的数据。`notification-state.json` 去重作业变化、同一故障和同一任务的提醒档位；`run-status.json` 保留最近尝试、最近成功及错误。数据未变不新增同步提醒，通知相对日期变化不算内容变化。失败保留旧数据、不刷新成功时间。
+
+若用户配置了 `ticktick_enabled: true`，同步成功后还会把活动作业幂等发布到 TickTick 指定项目；TickTick 负责任务界面和截止提醒。Token 只能从实例外的环境变量或 600 权限文件读取，不得写入插件包、报告或回复。`sync-ticktick` 可在不打开浏览器的情况下重发最近一次成功计划；它不因 Jupiter 暂时失败删除远端任务。连接验证成功后，用户可以关闭本机截止提醒，让 TickTick 作为唯一提醒来源。

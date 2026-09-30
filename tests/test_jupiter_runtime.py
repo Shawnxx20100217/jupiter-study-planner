@@ -75,6 +75,116 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result["new_notifications"], 0)
         self.assertEqual(len(self.read("notifications.json")), 1)
 
+    def test_deadline_reminders_are_configurable_and_deduplicated(self):
+        task = {"id": "deadline-1", "course": "Test Course", "title": "Quiz",
+                "due_precision": "time", "due_at": "2026-09-26T12:00:00+08:00",
+                "planning_disposition": "active", "source_status": "open"}
+        plan = {"timezone": "Asia/Shanghai", "queue": [task]}
+        config = {"deadline_reminders_enabled": True, "deadline_reminder_minutes": [1440, 120, 30]}
+        first, state = runtime.deadline_reminders(plan, config,
+                                                   runtime.planner.instant("2026-09-25T12:00:00+08:00"))
+        self.assertEqual([item["minutes_before"] for item in first], [1440])
+        second, state = runtime.deadline_reminders(plan, config,
+                                                    runtime.planner.instant("2026-09-26T10:01:00+08:00"), state)
+        self.assertEqual([item["minutes_before"] for item in second], [120])
+        third, state = runtime.deadline_reminders(plan, config,
+                                                   runtime.planner.instant("2026-09-26T11:31:00+08:00"), state)
+        self.assertEqual([item["minutes_before"] for item in third], [30])
+        repeat, _ = runtime.deadline_reminders(plan, config,
+                                                runtime.planner.instant("2026-09-26T11:40:00+08:00"), state)
+        self.assertEqual(repeat, [])
+
+    def test_ticktick_owns_reminders_when_enabled(self):
+        task = {"id": "deadline-1", "course": "Test Course", "title": "Quiz",
+                "due_precision": "time", "due_at": "2026-09-26T12:00:00+08:00",
+                "planning_disposition": "active", "source_status": "open"}
+        plan = {"timezone": "Asia/Shanghai", "queue": [task]}
+        items, _ = runtime.deadline_reminders(plan, {"ticktick_enabled": True},
+                                               runtime.planner.instant("2026-09-25T12:00:00+08:00"))
+        self.assertEqual(items, [])
+
+    def _add_refresh_fixture(self):
+        """Create one local-completed task plus one remaining date-only task."""
+        self.execute()
+        state = self.read("state.json")
+        state["tasks"]["2"] = {
+            "first_seen": "2026-09-25T08:00:00+00:00",
+            "last_seen": "2026-09-25T08:00:00+00:00", "personal": {},
+            "source": {"id": "2", "course": "Test Course", "title": "Reading",
+                        "kind": "assignment", "status": "open", "due_precision": "date",
+                        "due_date": "2026-09-29"},
+            "unverified": False, "verification_reason": None,
+        }
+        (self.state / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        runtime.planner.update(self.state, "1", status="completed")
+        reviews = [
+            {"key": "notice:new", "fingerprint": "new", "resolved": False,
+             "item": {"message": "请核对新通知", "notice": {"title": "新通知"}}},
+            {"key": "notice:old", "fingerprint": "old", "resolved": True,
+             "item": {"message": "已解决通知", "notice": {"title": "已解决"}}},
+        ]
+        (self.state / "pending-review.json").write_text(json.dumps(reviews), encoding="utf-8")
+        (self.state / "config.json").write_text(json.dumps({"include_date_only_events": True}), encoding="utf-8")
+
+    def test_ticktick_completion_refreshes_report_ics_and_pending_reviews(self):
+        self._add_refresh_fixture()
+        import ticktick_client
+
+        def fake_sync(instance_path, now=None, dry_run=False):
+            runtime.planner.update(self.state, "1", status="completed")
+            return {"ok": True, "local_updated": 1, "remote_completed": 1}
+
+        with patch.object(ticktick_client, "sync_instance", side_effect=fake_sync):
+            result = runtime.sync_ticktick(self.instance, now="2026-09-25T09:00:00+00:00")
+        self.assertTrue(result["presentation_refreshed"])
+        refreshed = json.loads(self.report.with_suffix(".json").read_text())
+        self.assertEqual([item["id"] for item in refreshed["queue"]], ["2"])
+        self.assertEqual(refreshed["pending_review_count"], 1)
+        report_text = self.report.read_text(encoding="utf-8")
+        self.assertIn("请核对新通知", report_text)
+        self.assertNotIn("已解决通知", report_text)
+        ics = self.report.with_suffix(".ics").read_text(encoding="utf-8")
+        self.assertIn("Reading", ics)
+        self.assertNotIn("Practice", ics)
+
+    def test_refresh_honors_explicit_date_only_setting(self):
+        self._add_refresh_fixture()
+        self.instance.write_text(json.dumps({"state_dir": str(self.state),
+                                             "report_path": str(self.report),
+                                             "include_date_only_events": False}))
+        runtime.refresh_plan_from_state(self.instance, now="2026-09-25T09:00:00+00:00")
+        ics = self.report.with_suffix(".ics").read_text(encoding="utf-8")
+        self.assertNotIn("Reading", ics)
+
+    def test_run_honors_explicit_date_only_setting(self):
+        self.instance.write_text(json.dumps({"state_dir": str(self.state),
+                                             "report_path": str(self.report),
+                                             "include_date_only_events": False}))
+        self.execute()
+        ics = self.report.with_suffix(".ics").read_text(encoding="utf-8")
+        self.assertNotIn("Practice", ics)
+
+    def test_refresh_failure_is_reported_after_remote_success(self):
+        import ticktick_client
+        with patch.object(ticktick_client, "sync_instance",
+                          return_value={"ok": True, "local_updated": 1}), \
+             patch.object(runtime, "refresh_plan_from_state",
+                          side_effect=RuntimeError("export failed")):
+            result = runtime.sync_ticktick(self.instance)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["presentation_refreshed"])
+        self.assertEqual(result["warnings"][0]["code"], "local_refresh_failed")
+
+    def test_date_only_deadline_reminder_uses_school_day_end(self):
+        plan = {"timezone": "Asia/Shanghai", "queue": [{
+            "id": "date-1", "course": "Test Course", "title": "Worksheet",
+            "due_precision": "date", "due_date": "2026-09-26",
+            "planning_disposition": "active", "source_status": "open"}]}
+        items, _ = runtime.deadline_reminders(plan, {"deadline_reminder_minutes": [30]},
+                                               runtime.planner.instant("2026-09-26T23:30:00+08:00"))
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["due"], "2026-09-26（日期型截止）")
+
     def test_title_and_deadline_changes_detected(self):
         self.execute()
         self.snapshot["observed_at"] = "2026-09-25T09:00:00+00:00"
@@ -167,6 +277,58 @@ class RuntimeTests(unittest.TestCase):
         after = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
         self.assertEqual(before, after)
 
+    def test_remind_reads_last_plan_without_collecting(self):
+        self.execute()
+        config = json.loads(self.instance.read_text())
+        config.update({"system_notifications": False, "deadline_reminders_enabled": True,
+                       "deadline_reminder_minutes": [120, 30]})
+        self.instance.write_text(json.dumps(config))
+        plan_path = self.report.with_suffix(".json")
+        plan = json.loads(plan_path.read_text())
+        plan["timezone"] = "Asia/Shanghai"
+        plan["queue"][0].update({"due_precision": "time", "due_date": "2026-09-26",
+                                  "due_at": "2026-09-26T12:00:00+08:00",
+                                  "planning_disposition": "active", "source_status": "open",
+                                  "personal_status": "open"})
+        plan_path.write_text(json.dumps(plan))
+        result = runtime.remind(self.instance, now="2026-09-26T10:01:00+08:00")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["deadline_reminders"], 1)
+        self.assertEqual(self.read("notifications.json")[-1]["type"], "deadline")
+        self.assertIn("deadlines", self.read("notification-state.json"))
+
+    def test_remind_dry_run_does_not_write_files(self):
+        self.execute()
+        before = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        result = runtime.remind(self.instance, now="2026-09-25T08:00:00+00:00", dry_run=True)
+        self.assertTrue(result["ok"])
+        after = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        self.assertEqual(before, after)
+
+    def test_failed_sync_still_checks_saved_deadline_reminder(self):
+        self.execute()
+        config = json.loads(self.instance.read_text())
+        config.update({"system_notifications": False, "deadline_reminders_enabled": True,
+                       "deadline_reminder_minutes": [120]})
+        self.instance.write_text(json.dumps(config))
+        plan_path = self.report.with_suffix(".json")
+        plan = json.loads(plan_path.read_text())
+        plan["timezone"] = "Asia/Shanghai"
+        plan["queue"][0].update({"due_precision": "time", "due_date": "2026-09-26",
+                                  "due_at": "2026-09-26T12:00:00+08:00",
+                                  "planning_disposition": "active", "source_status": "open",
+                                  "personal_status": "open"})
+        plan_path.write_text(json.dumps(plan))
+
+        def broken(path, login=False):
+            raise TimeoutError("network")
+
+        result = runtime.run(self.instance, collector=broken, normalize=self.normalize,
+                             now="2026-09-26T10:01:00+08:00")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["deadline_reminders"], 1)
+        self.assertEqual(self.read("notifications.json")[-1]["type"], "deadline")
+
     def test_concurrent_run_skipped_without_collecting(self):
         def should_not_run(path, login=False):
             self.fail("collector called while a run was active")
@@ -233,6 +395,29 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(value["RunAtLoad"])
         self.assertFalse(value["KeepAlive"])
         self.assertFalse(self.state.exists())
+
+    def test_generate_reminder_plist_uses_saved_plan_and_thirty_minutes(self):
+        output = self.root / "reminder.plist"
+        result = runtime.generate_launch_agent(self.instance, sys.executable, output, mode="remind")
+        self.assertFalse(result["enabled"])
+        self.assertEqual(result["mode"], "remind")
+        value = plistlib.loads(output.read_bytes())
+        self.assertEqual(value["ProgramArguments"][2:], ["remind", "--instance", str(self.instance)])
+        self.assertEqual(value["StartInterval"], 1800)
+        self.assertTrue(value["RunAtLoad"])
+        self.assertNotIn("StartCalendarInterval", value)
+        self.assertFalse(self.state.exists())
+
+    def test_generate_watch_plist_polls_jupiter_every_fifteen_minutes(self):
+        output = self.root / "watch.plist"
+        result = runtime.generate_launch_agent(self.instance, sys.executable, output, mode="watch")
+        self.assertFalse(result["enabled"])
+        self.assertEqual(result["mode"], "watch")
+        value = plistlib.loads(output.read_bytes())
+        self.assertEqual(value["ProgramArguments"][2:], ["run", "--instance", str(self.instance)])
+        self.assertEqual(value["StartInterval"], 900)
+        self.assertTrue(value["RunAtLoad"])
+        self.assertNotIn("StartCalendarInterval", value)
 
     def test_launch_agent_preserves_virtual_environment_symlink(self):
         interpreter = self.root / "venv" / "bin" / "python"

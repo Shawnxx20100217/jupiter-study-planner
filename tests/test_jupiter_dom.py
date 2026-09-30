@@ -87,6 +87,11 @@ class JupiterDOMTests(unittest.TestCase):
             with self.subTest(score=score):
                 self.assertEqual(self.parse(row(score=score))[0]["source_display_status"], expected)
 
+    def test_done_is_a_personal_marker_separate_from_submission(self):
+        result = self.parse(row(score="Done"))[0]
+        self.assertEqual(result["source_display_status"], "unknown")
+        self.assertTrue(result["personal_done"])
+
     def test_additional_display_markers_do_not_leak_points_or_imply_submission(self):
         for score, expected in (("/ 73.5", "ungraded"), ("information", "information"),
                                 ("excused / 64.5", "excused"), ("view", "view")):

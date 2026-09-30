@@ -1,6 +1,6 @@
 # Jupiter Ed 读取约定
 
-独立运行器是默认同步入口。只读取当前学生可见的数据，不提交作业、不点击 Done、不改分数、不发送消息。当前真实独立登录和全程采集验收仍在进行，定时未启用；实际成功或失败以私密 `run-status.json` 和报告覆盖为准。
+独立运行器是默认同步入口。默认只读取当前学生可见的数据，不提交作业、不改分数、不发送消息；若实例显式开启 `jupiter_done_writeback_enabled`，只把个人 To Do 的 Done 标记写回同一条作业，不触碰提交或评分。实际成功或失败以私密 `run-status.json` 和报告覆盖为准。
 
 ## 独立采集范围
 
@@ -24,7 +24,7 @@ Jupiter 自带 Calendar 是截止日期的事实来源。runtime 不把它复制
 - 保留截止原文和采集时间。明确 Calendar 日期须与列表月日相容。既有明确截止时刻在新日期相同时继续保留；日期改变或冲突时清除过时 `due_at`，保留旧证据供核实。
 - 空日期保持 unknown；学年两年范围内的 MM/DD 不能唯一定位时进入待核实。只有明确年份、相容既有映射或唯一 Calendar 日期才确定日期。学校时区来自实例配置，不根据电脑位置猜测。
 - 仅日期时不补造 23:59。规划器可使用前一天完成的保守目标，但必须与教师截止分开。“Start of class”“next class”须核对真实日期与课时，不能由空课表推断。
-- Done 是个人整理，不是已提交或教师已收取。空白、破折号、`/ 满分`、未评分不是未交；`graded` 是评分证据，不直接映射完成。只有明确的 submitted/completed/missing 才按对应证据更新。
+- Done 是个人整理，不是已提交或教师已收取。空白、破折号、`/ 满分`、未评分不是未交；`graded` 是评分证据，不直接映射完成。只有明确的 submitted/completed/missing 才按对应证据更新；显式启用写回时，个人 Done 只映射本地完成状态，不改变提交证据。
 - 新出现的已评分历史不批量导入；已有记录后来显示 graded，可保留为 reference 并说明提交证据待核实。新发现历史未评分没有明确缺交证据时先待核实；已有 active 不仅因为日期已过就排除。
 - 未找到任务不表示完成或删除。partial 扫描不能删除旧任务；完整列表中消失也保留最后观察时间。既有 derived 准备项和 superseded 汇总关系保留来源链，注明本次属于保留而非重新读取的原始行。
 
@@ -45,7 +45,9 @@ Bell Schedules 可在有可靠课时证据时作为 busy 参考；没有课的�
 
 独立 runtime 默认优先；用户明确要诊断时才用 Computer Use，不作自动模型回退。失败码区分登录失效、身份/课程变化、页面结构变化和运行依赖等问题。保留旧任务与报告；最近失败不能刷新 `last_success`。展示旧结果时说明其时间。
 
-`run-status.json` 记录最近尝试与成功；`notifications.json` 记录实质变化；`pending-review.json` 保存需理解或核实事项。目前没有系统弹窗、邮件或手机推送。launchd 生成器只生成每天本机当地时间 07:00/17:00 的配置，不启用；启用后直接运行本地 Python，不调用模型、不依赖 Codex 打开。
+`run-status.json` 记录最近尝试与成功；`notifications.json` 记录实质变化；`pending-review.json` 保存需理解或核实事项。截止提醒默认在截止前 24 小时、2 小时、30 分钟各一次，并写入本地通知状态；macOS 系统弹窗由实例配置中的 `system_notifications` 控制，没有邮件或手机推送。同步 launchd 生成器仍只生成每天本机当地时间 07:00/17:00 的配置；另用 `--mode remind` 生成每 30 分钟读取最近成功计划的提醒配置。两者都不自动启用，启用后直接运行本地 Python，不调用模型、不依赖 Codex 打开。
+
+用户若指定 TickTick，应优先使用 `ticktick_client.py` 的核心 Open API 发布路径。Jupiter 任务 ID 与 TickTick 任务 ID 保存在私密映射文件中，重复运行只更新同一任务；一次 Jupiter 读取失败或部分课程缺失不得删除 TickTick 任务。TickTick token 只能来自实例外的环境变量或权限为 600 的本地文件。完成状态可以由 Jupiter 明确为 submitted/completed、个人 Done 或本地看板完成标记写回 TickTick；不能把 project data 中暂时缺失的任务直接当作完成。
 
 ## 用户请求诊断时的浏览器规则
 
@@ -53,4 +55,4 @@ Bell Schedules 可在有可靠课时证据时作为 busy 参考；没有课的�
 
 ## 事实边界
 
-Jupiter 官方的 [学生/家长帮助](https://login.jupitered.com/help/?studlogin) 是 To Do、Calendar 与 Done 语义的参考；[集成说明](https://www.jupitered.com/integrate.php) 不等于已向学生开放作业 API。本插件不承诺 API/ICS 订阅能力，也不向第三方任务软件或日历自动写入。独立采集是否全程完成以本机验收记录为准，一次成功不保证未来界面、会话或课程配置保持不变。
+Jupiter 官方的 [学生/家长帮助](https://login.jupitered.com/help/?studlogin) 是 To Do、Calendar 与 Done 语义的参考；[集成说明](https://www.jupitered.com/integrate.php) 不等于已向学生开放作业 API。本插件不承诺学生端作业提交 API；Done 写回依赖页面中稳定可识别的个人勾选控件，找不到唯一控件时会跳过并保留旧状态。独立采集是否全程完成以本机验收记录为准，一次成功不保证未来界面、会话或课程配置保持不变。

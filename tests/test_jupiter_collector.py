@@ -223,5 +223,72 @@ class IdentityTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, code)
 
 
+class PersonalDoneTests(unittest.TestCase):
+    def test_observations_are_merged_into_matching_rows(self):
+        courses = [{"name": "Course A", "rows": [
+            {"id": "123", "title": "Practice"}, {"id": "456", "title": "Essay"}]}]
+        page = SimpleNamespace(url=collector.LOGIN_URL)
+        page.evaluate = Mock(return_value={"observations": [
+            {"id": "123", "personal_done": True}, {"id": "456", "personal_done": False}]})
+        original = collector.open_personal_done_page
+        collector.open_personal_done_page = lambda *_: True
+        try:
+            result = collector.collect_personal_done(page, {"entry_url": collector.LOGIN_URL}, courses)
+        finally:
+            collector.open_personal_done_page = original
+        self.assertEqual(result, [{"id": "123", "personal_done": True}, {"id": "456", "personal_done": False}])
+        self.assertTrue(courses[0]["rows"][0]["personal_done"])
+        self.assertFalse(courses[0]["rows"][1]["personal_done"])
+
+    def test_dom_helper_is_shared_and_does_not_guess_icon_state(self):
+        # The same helper is passed to page.evaluate for both read and write.
+        self.assertIn("controlState", collector.PERSONAL_DONE_SCRIPT)
+        self.assertIn("write = false", collector.PERSONAL_DONE_SCRIPT)
+        self.assertNotIn("getAttribute('src')", collector.PERSONAL_DONE_SCRIPT)
+        self.assertNotIn("getAttribute('class')", collector.PERSONAL_DONE_SCRIPT)
+
+    def test_dom_helper_fixture_rejects_mixed_and_multiple_controls(self):
+        """Run the pure page.evaluate function against a fake DOM (no browser)."""
+        import shutil
+        import subprocess
+        node = shutil.which("node") or "/Users/bugaoxing/Documents/Codex/2026-09-25/new-chat/work/jupiter-runtime/lib/python3.12/site-packages/playwright/driver/node"
+        if not Path(node).exists():
+            self.skipTest("bundled JavaScript runtime unavailable")
+        script = r'''const source = %s;
+const done = eval(source);
+class E {
+  constructor(tag, attrs={}, text='', opts={}) { this.tagName=tag.toUpperCase(); this.attrs={...attrs}; this.innerText=text; this.type=opts.type||''; this.checked=!!opts.checked; this.indeterminate=!!opts.indeterminate; this.disabled=!!opts.disabled; this.offsetWidth=1; this.offsetHeight=1; this.children=[]; }
+  getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs,k) ? this.attrs[k] : null; }
+  hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs,k); }
+  matches(s) { return (s.includes('input') && this.tagName==='INPUT' && this.type==='checkbox') || (s.includes('[role="checkbox"]') && this.attrs.role==='checkbox') || (s.includes('[aria-checked]') && this.hasAttribute('aria-checked')) || (s.includes('[aria-pressed]') && this.hasAttribute('aria-pressed')); }
+  querySelectorAll(s) { if (s.includes('[click]')) return this.children.filter(e => e.hasAttribute('click') || e.hasAttribute('onclick')); return this.children.filter(e => e.matches(s)); }
+  closest() { return this.scope || this; }
+  getClientRects() { return [1]; }
+  click() { this.checked=true; if (this.hasAttribute('aria-checked')) this.attrs['aria-checked']='true'; if (this.hasAttribute('aria-pressed')) this.attrs['aria-pressed']='true'; }
+}
+function run(controls, write=true, scopeText='Task') {
+  const scope = new E('div', {}, scopeText); scope.scope=scope;
+  const owner = new E('a', {onclick:'goassign(1)'}, 'Task'); owner.scope=scope; scope.children=[owner, ...controls];
+  global.getComputedStyle=()=>({display:'block', visibility:'visible'});
+  global.document={querySelectorAll:s => s.includes('[click]') ? [owner] : []};
+  return done({targets:[{id:'1', title:'Task'}], write});
+}
+const checkbox = (checked=false) => new E('input', {}, 'Done', {type:'checkbox', checked});
+const result={unchecked:run([checkbox(false)]), checked:run([checkbox(true)]), line:run([new E('input',{},'',{type:'checkbox'})], true, 'Task\nDone'), mixed:run([new E('div',{role:'checkbox','aria-checked':'mixed'},'Done')]), multiple:run([checkbox(false),checkbox(false)])};
+process.stdout.write(JSON.stringify(result));''' % json.dumps(collector.PERSONAL_DONE_SCRIPT)
+        completed = subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["unchecked"]["changed"], 1)
+        self.assertEqual(result["unchecked"]["observations"], [{"id": "1", "personal_done": False}])
+        self.assertEqual(result["checked"]["changed"], 0)
+        self.assertEqual(result["checked"]["observations"], [{"id": "1", "personal_done": True}])
+        self.assertEqual(result["line"]["changed"], 1)
+        self.assertEqual(result["line"]["observations"], [{"id": "1", "personal_done": False}])
+        self.assertEqual(result["mixed"]["observations"], [])
+        self.assertEqual(result["mixed"]["changed"], 0)
+        self.assertEqual(result["multiple"]["observations"], [])
+        self.assertEqual(result["multiple"]["changed"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

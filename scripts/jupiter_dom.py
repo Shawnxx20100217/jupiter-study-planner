@@ -181,8 +181,14 @@ def parse_course_html(html, course):
             raw_date = None
         elif not _DATE.fullmatch(raw_date):
             raise DOMParseError("unexpected_date", f"Assignment {assignment_id} has an unsupported date layout")
+        display_status = _text(cells[3])
         record = {"id": assignment_id, "course": course, "date": raw_date, "title": title,
-                  "source_display_status": _status(_text(cells[3])), "category": _text(cells[11])}
+                  "source_display_status": _status(display_status), "category": _text(cells[11])}
+        # Jupiter's student To Do list uses a personal "Done" marker.  Keep it
+        # separate from submission/grade evidence so it can safely sync with
+        # TickTick without claiming that the teacher received the work.
+        if display_status.casefold().strip() == "done":
+            record["personal_done"] = True
         if assignment_id in records and records[assignment_id] != record:
             raise DOMParseError("conflicting_duplicate", f"Assignment {assignment_id} has conflicting visible records")
         records[assignment_id] = record

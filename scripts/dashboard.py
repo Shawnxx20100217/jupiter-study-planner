@@ -53,6 +53,12 @@ def _alerts(plan, notifications, now=None):
             alerts.append({'kind': 'new', 'severity': 1, 'task_id': '',
                            'title': '发现新作业', 'course': '', 'task': item.get('message', ''),
                            'due': '', 'action': '先查看“优先任务”中的新增项目。'})
+        elif item.get('type') == 'deadline':
+            alerts.append({'kind': 'deadline', 'severity': 3, 'task_id': item.get('task_id', ''),
+                           'title': item.get('title', '作业即将截止'),
+                           'course': item.get('course', ''), 'task': item.get('task', item.get('message', '')),
+                           'due': item.get('due', ''),
+                           'action': f"距截止约 {item.get('remaining_minutes', '?')} 分钟，建议现在开始。"})
     pending_reviews = plan.get('pending_review_count', 0)
     if pending_reviews:
         alerts.append({'kind': 'notice', 'severity': 1, 'task_id': '',
@@ -92,6 +98,12 @@ def safe_payload(plan, status, config, notifications=None):
             'status': {k: status.get(k) for k in ('status', 'last_attempt', 'last_success', 'last_observed_at', 'coverage_complete')},
             'schedule_configured': config.get('schedule_enabled') is True,
             'schedule_hours': config.get('schedule_hours', []),
+            'deadline_reminders_enabled': config.get('deadline_reminders_enabled', True) is not False,
+            'deadline_reminder_minutes': config.get('deadline_reminder_minutes', [1440, 120, 30]),
+            'ticktick_enabled': config.get('ticktick_enabled', False) is True or
+                               isinstance(config.get('ticktick'), dict) and config.get('ticktick', {}).get('enabled') is True,
+            'ticktick_project': config.get('ticktick_project_name') or
+                               (config.get('ticktick') or {}).get('project_name') or '未设置',
             'course_count': len(coverage.get('courses', [])) or len({t.get('course') for t in plan.get('queue', [])})}
 
 

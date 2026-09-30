@@ -72,7 +72,7 @@ def browser_lock(config):
 
 def check_origin(page):
     parsed = urlsplit(page.url)
-    if parsed.scheme != "https" or parsed.hostname != "login.jupitered.com":
+    if parsed.scheme != "https" or parsed.netloc.lower() not in {"login.jupitered.com", "login.jupitered.com:443"}:
         raise CollectorError("unexpected_origin", "The browser left the Jupiter login site; collection stopped.")
 
 
@@ -228,6 +228,149 @@ def collect_notices(page, teachers):
     return notices
 
 
+# Reader and writer deliberately use the same state/ownership rules.  Image
+# names and CSS classes are not evidence of a checked state.  Unknown controls
+# remain unmatched until their actual Jupiter semantics have been verified.
+PERSONAL_DONE_SCRIPT = r"""({targets, write = false}) => {
+  const visible = element => {
+    if (!element) return false;
+    const style = getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden' &&
+      !!(element.offsetWidth || element.offsetHeight || element.getClientRects().length);
+  };
+  const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+  const assignmentIds = element => {
+    const handlers = [element.getAttribute('click'), element.getAttribute('onclick')];
+    return handlers.flatMap(handler => Array.from(String(handler || '').matchAll(
+      /\bgoassign\(\s*(\d+)\s*\)/g), match => match[1]));
+  };
+  const handlersIn = scope => [scope, ...scope.querySelectorAll('[click],[onclick]')];
+  const controlState = element => {
+    const values = [];
+    if (element.tagName === 'INPUT' && element.type === 'checkbox') {
+      if (element.indeterminate || typeof element.checked !== 'boolean') return null;
+      values.push(element.checked);
+    }
+    for (const attribute of ['aria-checked', 'aria-pressed']) {
+      if (!element.hasAttribute(attribute)) continue;
+      const raw = element.getAttribute(attribute);
+      if (raw !== 'true' && raw !== 'false') return null;
+      values.push(raw === 'true');
+    }
+    return values.length && values.every(value => value === values[0]) ? values[0] : null;
+  };
+  const isDoneControl = (element, scope) => {
+    const labels = [element.innerText, element.getAttribute('aria-label'),
+      element.getAttribute('title'), ...Array.from(element.labels || [], label => label.innerText)];
+    const exactLabel = labels.some(label => /^(done|complete|mark (as )?(done|complete)|完成|标记完成)$/i.test(normalize(label)));
+    // Jupiter may render the native checkbox next to a separate text node.
+    // Accept only an exact standalone line in the already isolated assignment.
+    const scopeLines = String(scope?.innerText || '').split(/\r?\n/).map(normalize);
+    const exactScopeLine = scopeLines.some(line => /^(done|complete|完成|标记完成)$/i.test(line));
+    return exactLabel || exactScopeLine;
+  };
+  const selector = 'input[type="checkbox"],[role="checkbox"],[aria-checked],[aria-pressed]';
+  const output = {observations: [], changed: 0, matched: [], unmatched: [], unconfirmed: []};
+  const targetCounts = new Map();
+  for (const target of targets) targetCounts.set(target.id, (targetCounts.get(target.id) || 0) + 1);
+  for (const target of targets) {
+    const reject = () => output.unmatched.push(target.id);
+    if (!/^\d+$/.test(target.id) || !normalize(target.title) || targetCounts.get(target.id) !== 1) {
+      reject(); continue;
+    }
+    const owners = Array.from(document.querySelectorAll('[click],[onclick]')).filter(element =>
+      visible(element) && assignmentIds(element).includes(target.id) &&
+      normalize(element.innerText).includes(normalize(target.title)));
+    if (owners.length !== 1) { reject(); continue; }
+    const owner = owners[0];
+    const scope = owner.closest('li,article,tr,.todo,.task,.assignment,.card') || owner;
+    // A broad layout row/card must never associate a checkbox with another task.
+    const ids = new Set(handlersIn(scope).flatMap(assignmentIds));
+    if (ids.size !== 1 || !ids.has(target.id)) { reject(); continue; }
+    const controls = [scope, ...scope.querySelectorAll(selector)].filter(element =>
+      element.matches(selector) && visible(element));
+    // Even differently labelled or nested controls make an unverified card
+    // ambiguous. Do not guess which one is Jupiter's personal Done control.
+    if (controls.length !== 1 || !isDoneControl(controls[0], scope)) { reject(); continue; }
+    const control = controls[0];
+    const checked = controlState(control);
+    if (checked === null) { reject(); continue; }
+    output.observations.push({id: target.id, personal_done: checked});
+    if (write && checked === false) {
+      if (control.disabled || control.getAttribute('aria-disabled') === 'true' ||
+          control.getAttribute('aria-readonly') === 'true') { reject(); continue; }
+      control.click();
+      // A click is only reported as a change when the DOM confirms completion.
+      if (controlState(control) !== true) { output.unconfirmed.push(target.id); continue; }
+      output.changed += 1;
+    }
+    output.matched.push(target.id);
+  }
+  return output;
+}"""
+
+
+def open_personal_done_page(page, config):
+    """Verify the configured entry and the resulting account before reading/writing."""
+    entry_url = config.get("entry_url")
+    if not entry_url:
+        return False
+    parsed = urlsplit(entry_url)
+    if parsed.scheme != "https" or parsed.netloc.lower() not in {"login.jupitered.com", "login.jupitered.com:443"}:
+        raise CollectorError("unexpected_origin", "The configured To Do URL is not on Jupiter.")
+    page.goto(entry_url)
+    check_origin(page)
+    page.wait_for_function("() => !!document.querySelector('#mainpage')", timeout=30000)
+    identity(page, config)
+    return True
+
+
+def write_personal_done_markers(page, config):
+    """Complete only verified, explicitly unchecked personal To Do controls."""
+    if config.get("jupiter_done_writeback_enabled") is not True:
+        return {"enabled": False, "changed": 0, "unmatched": []}
+    state_path = Path(config["state_dir"]) / "state.json"
+    if not state_path.exists():
+        return {"enabled": True, "changed": 0, "unmatched": []}
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"enabled": True, "changed": 0, "unmatched": []}
+    targets = []
+    for record in (state.get("tasks") or {}).values():
+        source = record.get("source") or {}
+        personal = record.get("personal") or {}
+        if personal.get("status") != "completed" or source.get("status") in {"submitted", "completed"}:
+            continue
+        assignment_id = str(source.get("source_assignment_id") or "")
+        title = str(source.get("title") or "").strip()
+        if assignment_id.isdigit() and title:
+            targets.append({"id": assignment_id, "title": title})
+    if not targets:
+        return {"enabled": True, "changed": 0, "unmatched": []}
+    if not open_personal_done_page(page, config):
+        return {"enabled": True, "changed": 0, "unmatched": [target["id"] for target in targets]}
+    result = page.evaluate(PERSONAL_DONE_SCRIPT, {"targets": targets, "write": True})
+    return {"enabled": True, **(result or {})}
+
+
+def collect_personal_done(page, config, courses):
+    """Read verified private Done observations and merge them into course rows."""
+    if not open_personal_done_page(page, config):
+        return []
+    targets = [{"id": str(row["id"]), "title": str(row.get("title", ""))}
+               for course in courses for row in course.get("rows", []) if str(row.get("id", "")).isdigit()]
+    result = page.evaluate(PERSONAL_DONE_SCRIPT, {"targets": targets, "write": False})
+    observations = (result or {}).get("observations", [])
+    by_id = {str(item.get("id")): item["personal_done"] for item in observations
+             if type(item.get("personal_done")) is bool}
+    for course in courses:
+        for row in course.get("rows", []):
+            if str(row.get("id")) in by_id:
+                row["personal_done"] = by_id[str(row["id"])]
+    return observations
+
+
 def workflow(page, config, login=False):
     check_origin(page)
     if login:
@@ -275,12 +418,15 @@ def workflow(page, config, login=False):
         del html
         courses.append({"name": name, "teacher": info["teacher"], "term": info["term"], "rows": rows})
     calendar_months = collect_calendar(page, courses)
+    done_observations = collect_personal_done(page, config, courses)
     notices = collect_notices(page, sorted(set(c["teacher"] for c in courses)))
     identity(page, config)
+    done_writeback = write_personal_done_markers(page, config)
     timezone = config.get("school_timezone", "Asia/Shanghai")
     return {"observed_at": datetime.now(ZoneInfo(timezone)).isoformat(), "timezone": timezone,
             "school_year": re.search(r"\d{4}-\d{2}", config["expected_school_year"]).group(),
             "courses": courses, "notices": notices, "model_calls": 0,
+            "done_observations": done_observations, "done_writeback": done_writeback,
             "coverage": {"complete": True, "courses": names,
                          "scope": "All configured courses in the verified displayed semester; teacher message previews from Last 14 days.",
                          "calendar_months": calendar_months,

@@ -161,6 +161,12 @@ def sync(directory, snapshot):
                                "before": before, "after": after})
             record.update(source=dict(source), last_seen=snapshot["observed_at"],
                           unverified=False, verification_reason=None)
+            if source.get("personal_done") is True:
+                # Jupiter's Done is a private To Do marker, distinct from
+                # submitted/completed teacher evidence.  Mirror it into the
+                # local personal state so TickTick can receive the same check.
+                record.setdefault("personal", {})["status"] = "completed"
+                record["personal"]["updated_at"] = snapshot["observed_at"]
             state["tasks"][task_id] = record
         for task_id, record in state["tasks"].items():
             if task_id not in seen:

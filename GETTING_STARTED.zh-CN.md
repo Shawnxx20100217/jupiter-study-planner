@@ -104,7 +104,39 @@ python3.12 -m venv "$HOME/.jupiter-runtime"
 "$HOME/.jupiter-runtime/bin/python" scripts/jupiter_runtime.py generate-launch-agent --instance "$HOME/JupiterStudyPlanner/state/local-instance.json" --python "$HOME/.jupiter-runtime/bin/python" --output "$HOME/JupiterStudyPlanner/jupiter-sync.plist"
 ```
 
-这个命令**仅生成**，不安装、不启动。可以请负责设置的人检查生成文件并启用；启用后应以本机调度状态和新的成功记录验证。Mac 需要运行、联网且会话有效；不保证睡眠、关机或会话过期期间按时读取。提醒写在本机文件中；macOS App 会对新增作业、状态变化或读取失败显示系统通知，没有手机推送。
+这个命令**仅生成**，不安装、不启动。可以请负责设置的人检查生成文件并启用；启用后应以本机调度状态和新的成功记录验证。Mac 需要运行、联网且会话有效；不保证睡眠、关机或会话过期期间按时读取。
+
+若希望老师临时布置的作业更快出现，可以把上面的 `generate-launch-agent` 改成 `--mode watch`。watch 每 15 分钟读取一次 Jupiter；没有变化时不会重复写入通知。Jupiter 没有可靠的推送接口，因此这已经是本机轮询能做到的及时性上限，电脑唤醒后会重新检查。
+
+截止前提醒使用独立的本机任务，不打开浏览器，每 30 分钟检查最近一次成功读取的计划：
+
+```bash
+"$HOME/.jupiter-runtime/bin/python" scripts/jupiter_runtime.py generate-launch-agent --mode remind --instance "$HOME/JupiterStudyPlanner/state/local-instance.json" --python "$HOME/.jupiter-runtime/bin/python" --output "$HOME/JupiterStudyPlanner/jupiter-reminders.plist"
+```
+
+默认在截止前 24 小时、2 小时和 30 分钟各提醒一次。提醒记录在本地 `notifications.json`，macOS App 和系统通知会显示；没有邮件或手机推送。Jupiter 登录失效、Mac 睡眠或关机时，提醒会等下一次本机任务运行。
+
+### 让 TickTick 负责提醒
+
+如果你已经在用 TickTick，可以把它作为任务和提醒的最终界面。先在 TickTick 的账户设置中创建 API token，把 token 单独保存到个人实例目录（不要放进插件或 GitHub），然后在 `local-instance.json` 加上：
+
+```json
+{
+  "ticktick_enabled": true,
+  "ticktick_api_base": "https://api.ticktick.com/open/v1",
+  "ticktick_project_id": "你的项目 ID",
+  "ticktick_token_file": "/PRIVATE/jupiter-state/ticktick-token",
+  "ticktick_reminder_minutes": [1440, 120, 30]
+}
+```
+
+用一次手动发布验证连接：
+
+```bash
+"$HOME/.jupiter-runtime/bin/python" scripts/jupiter_runtime.py sync-ticktick --instance "$HOME/JupiterStudyPlanner/state/local-instance.json"
+```
+
+它把活动 Jupiter 作业创建或更新到指定项目；重复运行不会重复创建。TickTick 勾选完成后，下一次 15 分钟同步会先读取该状态，再在同一轮 Jupiter 采集中更新本地看板和个人 Done；本地看板勾选后，下一次同步会完成 TickTick 任务。Jupiter 明确标记为已提交或已完成时也会完成对应 TickTick 任务；不会因一次读取失败删除 TickTick 任务。当前同步“勾上完成”事件，取消勾选不会自动重开远端任务。实例显式开启 `jupiter_done_writeback_enabled` 后，下一次同步还会把本地个人完成状态写回 Jupiter 的 To Do 勾选框，但不会提交作业或改分数。连接验证后可以关闭本机 `remind` plist，后续提醒由 TickTick 负责。若使用中国滴答清单，把 API 地址换成 `https://api.dida365.com/open/v1`。
 
 如希望在 Codex 中用自然语言操作，可以另外安装包含 `.codex-plugin/plugin.json` 的此插件，并告知 Codex 自己的实例配置路径。独立命令不依赖 Codex；分享包不会自动注册到接收者的 Codex，也不会继承原作者的任务、权限或定时任务。
 

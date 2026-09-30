@@ -236,7 +236,8 @@ def build_snapshot(raw, state, now=None):
                 source.pop(field, None)
             source.update(id=task_id, course=name, title=title, source_assignment_id=assignment_id,
                           source_display_status=display, category=row.get("category", ""),
-                          source_teacher=course.get("teacher"), source_row_date=row.get("date"))
+                          source_teacher=course.get("teacher"), source_row_date=row.get("date"),
+                          personal_done=bool(row.get("personal_done", False)))
             source.update(_deadline(row, old, raw.get("school_year"), zone, review, task_id))
             source.setdefault("source_url", "https://login.jupitered.com/")
             source.setdefault("kind", "assignment")
