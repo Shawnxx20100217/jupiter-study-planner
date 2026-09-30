@@ -159,8 +159,8 @@ def local_form(path, nonce, message="", success=False):
 
 
 def origin_allowed(request_origin, expected_origin):
-    """Allow embedded same-host form posts that omit Origin, never foreign ones."""
-    return not request_origin or request_origin == expected_origin
+    """Allow embedded same-host form posts, including an opaque ``null`` origin."""
+    return not request_origin or request_origin == "null" or request_origin == expected_origin
 
 
 def serve_local_form(instance_path, project_id=None, timeout=1200, browser_open=None, port=0):

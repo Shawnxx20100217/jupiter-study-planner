@@ -70,6 +70,7 @@ class TickTickAuthorizeTests(unittest.TestCase):
 
     def test_embedded_browser_may_omit_origin_but_foreign_origin_is_rejected(self):
         self.assertTrue(auth.origin_allowed(None, "http://127.0.0.1:1234"))
+        self.assertTrue(auth.origin_allowed("null", "http://127.0.0.1:1234"))
         self.assertTrue(auth.origin_allowed("http://127.0.0.1:1234", "http://127.0.0.1:1234"))
         self.assertFalse(auth.origin_allowed("https://evil.example", "http://127.0.0.1:1234"))
 
