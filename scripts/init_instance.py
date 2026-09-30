@@ -59,6 +59,9 @@ def initialize(data_dir, identity, plugin_root=PLUGIN_ROOT):
               "ticktick_token_file": str(state / "ticktick-token"),
               "ticktick_reminder_minutes": [1440, 120, 30],
               "jupiter_done_writeback_enabled": False,
+              "automation_paused": False,
+              "collection_paused": False,
+              "launch_at_login": False,
               "autonomous_collection_verified": False}
     descriptor = os.open(instance, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:

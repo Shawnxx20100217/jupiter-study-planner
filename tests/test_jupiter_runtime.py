@@ -419,6 +419,46 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(value["RunAtLoad"])
         self.assertNotIn("StartCalendarInterval", value)
 
+    def test_user_can_pause_and_resume_background_automation(self):
+        self.instance.write_text(json.dumps({"state_dir": str(self.state),
+                                             "report_path": str(self.report),
+                                             "ticktick_enabled": True}))
+        paused = runtime.set_automation_paused(self.instance, True)
+        self.assertTrue(paused["ok"])
+        config = json.loads(self.instance.read_text())
+        self.assertTrue(config["automation_paused"])
+        self.assertTrue(config["collection_paused"])
+        result = runtime.run(self.instance, collector=self.collect, normalize=self.normalize)
+        self.assertEqual(result["error_code"], "automation_paused")
+        self.assertTrue(result["skipped"])
+        resumed = runtime.set_automation_paused(self.instance, False)
+        self.assertFalse(resumed["automation_paused"])
+        config = json.loads(self.instance.read_text())
+        self.assertFalse(config["automation_paused"])
+        self.assertFalse(config["collection_paused"])
+        self.assertEqual(self.instance.stat().st_mode & 0o777, 0o600)
+
+    def test_pause_blocks_standalone_ticktick_and_reminder_agents(self):
+        self.instance.write_text(json.dumps({"state_dir": str(self.state),
+                                             "report_path": str(self.report),
+                                             "ticktick_enabled": True,
+                                             "automation_paused": True}))
+        tick = runtime.sync_ticktick(self.instance)
+        self.assertTrue(tick["skipped"])
+        self.assertEqual(tick["error_code"], "automation_paused")
+        reminder = runtime.remind(self.instance, now="2026-09-25T08:00:00+00:00")
+        self.assertTrue(reminder["skipped"])
+        self.assertEqual(reminder["error_code"], "automation_paused")
+
+    def test_launch_at_login_preference_is_persistent_and_has_private_plist_path(self):
+        enabled = runtime.set_launch_at_login(self.instance, True)
+        self.assertTrue(enabled["launch_at_login"])
+        self.assertTrue(enabled["plist"].endswith(".plist"))
+        self.assertTrue(json.loads(self.instance.read_text())["launch_at_login"])
+        disabled = runtime.set_launch_at_login(self.instance, False)
+        self.assertFalse(disabled["launch_at_login"])
+        self.assertFalse(json.loads(self.instance.read_text())["launch_at_login"])
+
     def test_launch_agent_preserves_virtual_environment_symlink(self):
         interpreter = self.root / "venv" / "bin" / "python"
         interpreter.parent.mkdir(parents=True)

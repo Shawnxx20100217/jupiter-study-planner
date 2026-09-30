@@ -9,6 +9,7 @@ from urllib.parse import quote
 TASK_FIELDS = ('id', 'title', 'course', 'due_precision', 'due_date', 'due_at',
                'remaining_minutes', 'effective_estimate_source', 'planning_disposition',
                'planning_note', 'notes', 'is_missing', 'source_status', 'personal_status',
+               'completion_mode',
                'due_label', 'priority_score', 'priority_band', 'priority_reason',
                'priority_reasons', 'risk_level', 'risk_flags', 'confidence', 'next_action',
                'scheduled_minutes', 'unscheduled_minutes', 'unscheduled_reason')
@@ -98,6 +99,8 @@ def safe_payload(plan, status, config, notifications=None):
             'status': {k: status.get(k) for k in ('status', 'last_attempt', 'last_success', 'last_observed_at', 'coverage_complete')},
             'schedule_configured': config.get('schedule_enabled') is True,
             'schedule_hours': config.get('schedule_hours', []),
+            'automation_paused': config.get('automation_paused') is True or config.get('collection_paused') is True,
+            'launch_at_login': config.get('launch_at_login') is True,
             'deadline_reminders_enabled': config.get('deadline_reminders_enabled', True) is not False,
             'deadline_reminder_minutes': config.get('deadline_reminder_minutes', [1440, 120, 30]),
             'ticktick_enabled': config.get('ticktick_enabled', False) is True or

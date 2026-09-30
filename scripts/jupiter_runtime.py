@@ -74,6 +74,68 @@ def instance_config(instance_path):
     return instance_path, directory, report, report_json
 
 
+def _write_instance_config(instance_path, updates):
+    """Atomically update user-controlled automation flags.
+
+    The instance file contains the user's private paths and TickTick token
+    location.  Re-read it immediately before writing so a UI toggle cannot
+    clobber a concurrent authorization or path change.
+    """
+    instance_path = Path(instance_path).expanduser().resolve()
+    config = read(instance_path, None)
+    if not isinstance(config, dict):
+        raise ValueError("Instance configuration must be a JSON object")
+    config.update(updates)
+    commit_files({instance_path: encoded(config)})
+    try:
+        os.chmod(instance_path, 0o600)
+    except OSError:
+        pass
+    return config
+
+
+def set_automation_paused(instance_path, paused):
+    """Persist the user's global background-sync switch.
+
+    ``automation_paused`` is the public setting.  The legacy
+    ``collection_paused`` flag is mirrored for older collectors so a paused
+    setting cannot accidentally launch a browser on an older build.
+    """
+    paused = bool(paused)
+    instance_path, directory, _, _ = instance_config(instance_path)
+    _write_instance_config(instance_path, {
+        "automation_paused": paused,
+        "collection_paused": paused,
+    })
+    return {"ok": True, "automation_paused": paused,
+            "message": "后台同步已暂停。" if paused else "后台同步已恢复。"}
+
+
+def _launch_agent_label(instance_path):
+    return "local.jupiter-study-planner.app." + digest(str(Path(instance_path).expanduser().resolve()))[:12]
+
+
+def launch_at_login_path(instance_path):
+    """Return the per-user launchd plist path for the app toggle."""
+    return Path.home() / "Library" / "LaunchAgents" / (_launch_agent_label(instance_path) + ".plist")
+
+
+def set_launch_at_login(instance_path, enabled):
+    """Persist only the launch-at-login preference.
+
+    App lifecycle operations (``launchctl bootstrap``/``bootout``) remain in
+    the native app, where the current bundle path and login session are known.
+    This command is deliberately safe to call from a headless launchd run.
+    """
+    enabled = bool(enabled)
+    instance_path, directory, _, _ = instance_config(instance_path)
+    with run_lock(directory):
+        _write_instance_config(instance_path, {"launch_at_login": enabled})
+    return {"ok": True, "launch_at_login": enabled,
+            "plist": str(launch_at_login_path(instance_path)),
+            "message": "已开启登录时启动。" if enabled else "已关闭登录时启动。"}
+
+
 def calendar_paths(report):
     """Sibling user-facing exports for the super-calendar layer."""
     report = Path(report)
@@ -132,6 +194,14 @@ def refresh_plan_from_state(instance_path, now=None):
 
 def sync_ticktick(instance_path, now=None, dry_run=False):
     """Publish the saved Jupiter plan to TickTick when the private config enables it."""
+    try:
+        config = read(Path(instance_path).expanduser().resolve(), {})
+        if config.get("automation_paused") is True or config.get("collection_paused") is True:
+            return {"ok": False, "skipped": True, "error_code": "automation_paused",
+                    "message": "后台同步已暂停；TickTick 未更新。"}
+    except Exception:
+        # Keep the existing safe error handling below for malformed instances.
+        pass
     try:
         import ticktick_client
         result = ticktick_client.sync_instance(instance_path, now=now, dry_run=dry_run)
@@ -559,6 +629,9 @@ def failure_info(stage, error):
     # Exception text can contain account URLs, source HTML, or credentials.
     supplied = getattr(error, "code", "")
     known = {
+        "automation_paused": ("automation_paused", "后台同步已暂停；旧作业数据已保留。"),
+        "collection_paused": ("collection_paused", "浏览器采集已暂停修复；旧作业数据已保留。"),
+        "browser_state_unavailable": ("browser_state_unavailable", "当前运行环境无法检查专用浏览器；已停止启动，旧作业数据已保留。"),
         "login_required": ("login_required", "Jupiter 登录已失效，需要重新登录；旧计划已保留。"),
         "session_expired": ("login_required", "Jupiter 登录已失效，需要重新登录；旧计划已保留。"),
         "layout_changed": ("page_changed", "Jupiter 页面结构发生变化，需要检查读取器；旧计划已保留。"),
@@ -612,6 +685,9 @@ def _remind_locked(instance_path, current, dry_run=False):
     plan = read(report_json, {})
     tracking = read(directory / "notification-state.json", {})
     config = read(instance_path, {})
+    if config.get("automation_paused") is True or config.get("collection_paused") is True:
+        return {"ok": False, "skipped": True, "error_code": "automation_paused",
+                "message": "后台同步已暂停；截止提醒未运行。"}
     items, deadline_tracking = deadline_reminders(
         plan, config, current, tracking.get("deadlines", {}))
     result = {"ok": True, "dry_run": dry_run, "deadline_reminders": len(items),
@@ -670,6 +746,9 @@ def run(instance_path, collector=None, normalize=None, now=None, dry_run=False):
         with (nullcontext() if dry_run else run_lock(directory)):
             previous_status = read(directory / "run-status.json", {})
             tick_config = read(instance_path, {})
+            if tick_config.get("automation_paused") is True or tick_config.get("collection_paused") is True:
+                return {"ok": False, "skipped": True, "error_code": "automation_paused",
+                        "message": "后台同步已暂停；旧作业数据已保留。"}
             tick_enabled = (tick_config.get("ticktick_enabled") is True or
                             isinstance(tick_config.get("ticktick"), dict) and
                             tick_config.get("ticktick", {}).get("enabled") is True)
@@ -875,6 +954,16 @@ def main(argv=None):
     task.add_argument("--instance", required=True, type=Path)
     task.add_argument("--task-id", required=True)
     task.add_argument("--open", action="store_true", help="Reopen a locally completed task")
+    pause = commands.add_parser("set-automation-paused", help="Pause or resume all background collection and TickTick publishing")
+    pause.add_argument("--instance", required=True, type=Path)
+    pause_group = pause.add_mutually_exclusive_group(required=True)
+    pause_group.add_argument("--paused", action="store_true", help="Pause background automation")
+    pause_group.add_argument("--resume", action="store_true", help="Resume background automation")
+    login_start = commands.add_parser("set-launch-at-login", help="Persist the app's launch-at-login preference")
+    login_start.add_argument("--instance", required=True, type=Path)
+    login_group = login_start.add_mutually_exclusive_group(required=True)
+    login_group.add_argument("--enabled", action="store_true", help="Enable launch at login")
+    login_group.add_argument("--disabled", action="store_true", help="Disable launch at login")
     generating = commands.add_parser("generate-launch-agent", help="Generate, but do not enable, a local sync or reminder schedule")
     generating.add_argument("--instance", required=True, type=Path)
     generating.add_argument("--python", required=True, type=Path)
@@ -898,6 +987,16 @@ def main(argv=None):
             result = mark_task_complete(args.instance, args.task_id, completed=not args.open)
         except Exception:
             result = {"ok": False, "error_code": "task_update_failed", "message": "未能更新本地完成状态；原数据已保留。"}
+    elif args.command == "set-automation-paused":
+        try:
+            result = set_automation_paused(args.instance, args.paused)
+        except Exception:
+            result = {"ok": False, "error_code": "automation_setting_failed", "message": "未能更新后台同步开关；原设置已保留。"}
+    elif args.command == "set-launch-at-login":
+        try:
+            result = set_launch_at_login(args.instance, args.enabled)
+        except Exception:
+            result = {"ok": False, "error_code": "launch_setting_failed", "message": "未能更新开机启动设置；原设置已保留。"}
     else:
         try:
             result = generate_launch_agent(args.instance, args.python, args.output, mode=args.mode)

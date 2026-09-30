@@ -9,7 +9,7 @@ BIN="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
 rm -rf "$OUT"
 mkdir -p "$BIN" "$RES"
-/usr/bin/swiftc "$SCRIPT_DIR/main.swift" -o "$BIN/JupiterStudyPlanner" -framework Cocoa -framework WebKit
+/usr/bin/swiftc "$SCRIPT_DIR/main.swift" -o "$BIN/JupiterStudyPlanner" -framework Cocoa
 if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
   cp "$SCRIPT_DIR/AppIcon.icns" "$RES/AppIcon.icns"
 fi
@@ -21,6 +21,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>local.jupiter.study-planner</string>
 <key>CFBundleName</key><string>Jupiter 作业管家</string>
 <key>CFBundleDisplayName</key><string>Jupiter 作业管家</string>
+<key>CFBundleShortVersionString</key><string>0.3.0</string>
+<key>CFBundleVersion</key><string>20260930</string>
 <key>CFBundleIconFile</key><string>AppIcon.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -30,6 +32,7 @@ PLIST
 if command -v codesign >/dev/null 2>&1; then
   # Finder metadata on copied assets can make ad-hoc signing fail on macOS.
   xattr -cr "$OUT" 2>/dev/null || true
-  codesign --force --deep --sign - "$OUT" >/dev/null 2>&1 || true
+  codesign --force --deep --sign - "$OUT"
+  codesign --verify --deep --strict "$OUT"
 fi
 printf '%s\n' "$OUT"

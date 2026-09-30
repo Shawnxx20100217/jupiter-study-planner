@@ -8,14 +8,15 @@
 
 同步后的可见入口是个人报告目录里的 `study-plan.html`，用浏览器打开即可。分享包只含代码、说明和虚构示例；安装插件不会自动设置对方的账户或启动定时。
 
-在 macOS 上还可以构建一个独立的 **Jupiter 作业管家 App**。它只是本机看板的原生窗口外壳：打开后显示个人报告，工具栏可以手动同步、按当前可用分钟生成学习段，并打开报告目录。App 会在运行时查找 `~/JupiterStudyPlanner`，不会把登录状态、作业内容或机器路径编译进程序；在当前源码目录构建时也会回退到旁边的测试报告。
+在 macOS 上还可以构建一个独立的 **Jupiter 作业管家 App**。它是一个轻量的本机控制窗口：可以打开 TickTick、立即同步，并用两个开关控制后台同步和登录 Mac 时自动运行。关闭窗口不会停止后台任务；关闭“后台自动同步”会暂停 Jupiter、TickTick 和截止提醒，保留已有任务与本地数据。App 会在运行时读取 `~/Library/Application Support/Jupiter Study Planner/paths.json` 或 `~/JupiterStudyPlanner`，不会把登录状态、作业内容或机器路径编译进程序。
 
 ```bash
 bash app/build_app.sh
-open "../Jupiter 作业管家.app"
+ditto --norsrc "../Jupiter 作业管家.app" "$HOME/Applications/Jupiter 作业管家.app"
+open "$HOME/Applications/Jupiter 作业管家.app"
 ```
 
-App 需要先完成本机实例初始化和首次同步；它不会替代登录或把账户资料复制给别人。分享包包含 App 源码和构建脚本，接收者在自己的 Mac 上构建即可。
+App 需要先完成本机实例初始化和首次同步；它不会替代登录或把账户资料复制给别人。设置窗口里的“登录 Mac 时自动启动”只管理当前实例的后台调度，不会打开普通 Chrome，也不会删除 TickTick 中已有的任务。分享包包含 App 源码和构建脚本，接收者在自己的 Mac 上构建即可。
 
 ## 当前实现与验收状态
 
@@ -83,7 +84,7 @@ python3.12 -m venv /PRIVATE/jupiter-runtime
 
 在 Codex 中可以说“同步 Jupiter 作业”“现在有 20 分钟”“这项还剩 15 分钟”。已配置实例时，插件优先调用本地流程。只有用户要求诊断时才使用模型浏览器检查页面；独立运行失败不会触发隐蔽的模型采集开销。
 
-Done 勾选、未评分和实际提交分别处理。新发现的历史未评分项单列待核实；已有待办不会仅因逾期就被隐藏。信息、免做和评分汇总项不计入工作量。已确认课堂互评保留课堂提醒；已被细分作业覆盖的汇总通知不重复计时。仅有日期时不编造钟点，原先明确的截止时刻只在新日期相容时保留。Calendar 空档不自动成为自习时间。
+作业文字、未评分和实际提交分别处理；提交文档、答案或论坛文字的任务不会启用本地完成勾选，课堂记录和 Participation / Attendance 项目才启用。新发现的历史未评分项单列待核实；已有待办不会仅因逾期就被隐藏。信息、免做和评分汇总项不计入工作量。已确认课堂互评保留课堂提醒；已被细分作业覆盖的汇总通知不重复计时。仅有日期时不编造钟点，原先明确的截止时刻只在新日期相容时保留。Calendar 空档不自动成为自习时间。
 
 ## 本地定时与结果
 
@@ -103,6 +104,17 @@ Done 勾选、未评分和实际提交分别处理。新发现的历史未评分
 
 ## TickTick 输出
 
+### 一次性连接向导
+
+个人自用不需要注册 OAuth 应用。TickTick 官方 Open API 文档提供的快速方式是：打开 TickTick 网页，进入头像 → **Settings → Account → API Token**，创建个人令牌。令牌只在本机输入并保存，不要粘贴到聊天、插件仓库或 GitHub。可以用一次性本机页面完成验证和清单选择：
+
+```bash
+/PRIVATE/jupiter-runtime/bin/python /PLUGIN/scripts/ticktick_authorize.py \
+  --instance /PRIVATE/jupiter-state/local-instance.json --web
+```
+
+命令会打印一个仅绑定 `127.0.0.1`、随机路径的临时地址。提交前会只读验证令牌和目标清单；验证失败不会写入令牌或打开同步。成功后会把令牌以权限 `600` 写入实例目录，并自动启用 TickTick。它不读取 Codex 的连接凭据，也不需要模型。官方流程与 OAuth 备用流程见 [TickTick Open API 文档](https://developer.ticktick.com/docs/openapi.md)。
+
 如果你希望由 TickTick 负责提醒和任务界面，可以打开实例配置中的 `ticktick_enabled`，填写 TickTick 项目和一个只放在本机、权限为 600 的 API token 文件：
 
 ```json
@@ -121,9 +133,9 @@ Done 勾选、未评分和实际提交分别处理。新发现的历史未评分
 /PRIVATE/jupiter-runtime/bin/python /PLUGIN/scripts/jupiter_runtime.py sync-ticktick --instance /PRIVATE/jupiter-state/local-instance.json
 ```
 
-同步以 Jupiter 为作业事实源、以 TickTick 为任务和提醒界面：同一个 Jupiter 作业只会对应一个 TickTick 任务，截止日期或标题变化会更新它。TickTick 勾选完成后，下一次 15 分钟同步会先读取该状态，再在同一轮 Jupiter 采集中写入个人 Done；本地看板勾选后，下一次同步会完成对应 TickTick 任务。Jupiter 标记为已提交或已完成时也会完成对应 TickTick 任务；不会因为一次 Jupiter 读取失败或部分页面缺失而删除 TickTick 任务。当前同步“勾上完成”事件，取消勾选不会自动重开远端任务。默认不点击学校 Jupiter 网页的 Done；实例显式开启 `jupiter_done_writeback_enabled` 后，才会把本地个人完成状态写回 Jupiter 的 To Do 勾选框，仍不提交作业或改分数。TickTick 项目负责最终提醒，因此本机截止弹窗可以在连接验证成功后关闭。国际版默认使用 `api.ticktick.com`；中国滴答清单请改用 `https://api.dida365.com/open/v1`，并使用对应区域的 token。
+同步以 Jupiter 为作业事实源、以 TickTick 为任务和提醒界面：同一个 Jupiter 作业只会对应一个 TickTick 任务，截止日期或标题变化会更新它。提交文档、答案或论坛文字的任务只同步任务和状态，不猜测提交结果；课堂记录和 Participation / Attendance 项目才显示本地完成勾选。TickTick 负责任务提醒，Jupiter 只负责提供文字、课程和截止日期。不会因为一次 Jupiter 读取失败或部分页面缺失而删除 TickTick 任务。连接验证后可以关闭本机截止弹窗。国际版默认使用 `api.ticktick.com`；中国滴答清单请改用 `https://api.dida365.com/open/v1`，并使用对应区域的 token。
 
-真实作业、进度、来源证据和浏览器 profile 放在私密实例目录。可分享插件只含代码、文档和虚构测试。没有已验证的学生端 Jupiter iCal/API 连接器；插件以 Jupiter 自带 Calendar 和课程表为事实来源，再生成本地 `.ics`。默认不写回 Jupiter；显式启用 `jupiter_done_writeback_enabled` 后只同步个人 Done 标记，不提交作业、不改分数。
+真实作业、进度、来源证据和浏览器 profile 放在私密实例目录。可分享插件只含代码、文档和虚构测试。没有已验证的学生端 Jupiter iCal/API 连接器；插件以 Jupiter 自带 Calendar 和课程表为事实来源，再生成本地 `.ics`。不会打开每个作业详情页去扫描或写回 Jupiter 的 Done；这样同步只读取课程列表文字，避免为了本地标记启动大量浏览器页面。
 
 更多语义见[读取约定](references/jupiter-reading.md)。从插件目录运行回归测试：
 
