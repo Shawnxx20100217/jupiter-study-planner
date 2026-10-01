@@ -240,7 +240,7 @@ def collect_notices(page, teachers):
 # checkbox itself is custom markup, so only the hidden ``flag`` value together
 # with Jupiter's exact flag controls are accepted as evidence.  No icon or CSS
 # class is interpreted as a state.
-PERSONAL_DONE_DETAIL_SCRIPT = r"""({write = false}) => {
+PERSONAL_DONE_DETAIL_SCRIPT = r"""({write = false, desired = null}) => {
   const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
   const input = document.querySelector('input[type="hidden"][name="flag"]');
   const label = document.querySelector('#flag_script');
@@ -253,11 +253,12 @@ PERSONAL_DONE_DETAIL_SCRIPT = r"""({write = false}) => {
   const done = input.value === '1';
   output.status = 'known';
   output.personal_done = done;
-  if (write && !done) {
+  if (write && (desired === true || desired === false) && done !== desired) {
     if (typeof window.clickcheck !== 'function') return {...output, status: 'unconfirmed'};
     window.clickcheck('flag');
-    if (input.value !== '1') return {...output, status: 'unconfirmed'};
-    output.personal_done = true;
+    const next = input.value === '1';
+    if (next !== desired) return {...output, status: 'unconfirmed'};
+    output.personal_done = next;
     output.changed = 1;
   }
   return output;
@@ -414,7 +415,9 @@ def _sync_personal_done_details(page, config, courses, targets, write=False):
                     raise CollectorError("assignment_row_not_found", "The verified course row was not uniquely found.")
                 _detail_marker_ready(page, timeout=8000)
                 check_origin(page)
-                detail = page.evaluate(PERSONAL_DONE_DETAIL_SCRIPT, {"write": write}) or {}
+                detail = page.evaluate(PERSONAL_DONE_DETAIL_SCRIPT, {
+                    "write": write, "desired": target.get("desired_done")
+                }) or {}
                 if detail.get("status") != "known":
                     raise CollectorError("done_state_unknown", "The assignment Done control did not expose a verified state.")
                 result["observations"].append({"id": str(target["id"]),
@@ -437,7 +440,13 @@ def _sync_personal_done_details(page, config, courses, targets, write=False):
 
 
 def write_personal_done_markers(page, config, courses=None):
-    """Complete only verified, explicitly unchecked personal Done markers."""
+    """Complete only verified, local personal Done markers.
+
+    Jupiter exposes the same private checkbox for both classroom bookkeeping
+    and real submission work.  The latter is deliberately excluded from this
+    writeback path so a TickTick check can never be mistaken for teacher
+    submission evidence.
+    """
     if config.get("jupiter_done_writeback_enabled") is not True:
         return {"enabled": False, "changed": 0, "unmatched": []}
     state_path = Path(config["state_dir"]) / "state.json"
@@ -451,21 +460,54 @@ def write_personal_done_markers(page, config, courses=None):
     for record in (state.get("tasks") or {}).values():
         source = record.get("source") or {}
         personal = record.get("personal") or {}
-        if (personal.get("status") != "completed" or source.get("status") in {"submitted", "completed"}
-                or source.get("completion_mode") != "local"):
+        if (personal.get("status") not in {"open", "completed"} or
+                (personal.get("done_observed") is not True and
+                 personal.get("done_sync_pending") is not True) or
+                not _done_writeback_allowed(source)):
             continue
         assignment_id = str(source.get("source_assignment_id") or "")
         title = str(source.get("title") or "").strip()
         course = str(source.get("course") or source.get("course_name") or "").strip()
         if (assignment_id.isdigit() and title and course and
                 source.get("source_display_status") != "graded"):
-            targets.append({"id": assignment_id, "title": title, "course": course})
+            targets.append({"id": assignment_id, "title": title, "course": course,
+                            "desired_done": personal.get("status") == "completed"})
     if not targets:
         return {"enabled": True, "changed": 0, "unmatched": []}
     if courses is None:
         return {"enabled": True, "changed": 0, "unmatched": [target["id"] for target in targets]}
     result = _sync_personal_done_details(page, config, courses, targets, write=True)
     return {"enabled": True, **result}
+
+
+def _done_writeback_allowed(source):
+    """Return whether a private Done tick is safe to mirror from TickTick.
+
+    ``completion_mode`` is often unknown in Jupiter's HTML.  We therefore use
+    a conservative text deny-list for submission language and accept the
+    remaining private classroom markers.  This keeps documents, essays,
+    reports, worksheets, forum posts and explicit uploads under their real
+    Jupiter submission state.
+    """
+    if not isinstance(source, dict):
+        return False
+    if source.get("status") in {"submitted", "completed"}:
+        return False
+    if source.get("source_display_status") == "graded":
+        return False
+    if source.get("requires_submission") is True or source.get("completion_mode") == "submission":
+        return False
+    text = " ".join(str(source.get(key) or "") for key in (
+        "title", "category", "description", "notes", "instructions",
+        "requirements", "submission_instructions", "planning_note"
+    )).casefold()
+    if re.search(
+        r"\b(?:submit(?:ted|ting|s)?|submission|upload(?:ed|ing|s)?|"
+        r"turn\s+in|hand\s+in|attach(?:ment|ments|ed|ing)?|"
+        r"document|essay|paper|report|forum|discussion|response|worksheet|"
+        r"written\s+answers?)\b|提交|上传|论坛|讨论帖|书面答复|文档", text):
+        return False
+    return True
 
 
 def collect_personal_done(page, config, courses):
@@ -539,19 +581,50 @@ def workflow(page, config, login=False):
         del html
         courses.append({"name": name, "teacher": info["teacher"], "term": info["term"], "rows": rows})
     calendar_months = collect_calendar(page, courses)
-    # Do not open every assignment detail page during a refresh.  Jupiter's
-    # private Done flag is only relevant to local classroom records; submission
-    # rows (documents, answers and forum posts) are deliberately left to
-    # Jupiter/TickTick's real submission state.  Any safe list-row marker was
-    # already captured by parse_course_html without another browser navigation.
+    # Read detail pages only for assignments whose private Done state has been
+    # observed before.  This keeps hourly refreshes bounded while allowing a
+    # user to uncheck a previously checked Jupiter marker and have that change
+    # reach TickTick.  New checks are still captured from the verified list row.
+    previous_state = {}
+    try:
+        previous_state = json.loads((Path(config["state_dir"]) / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, KeyError, TypeError):
+        previous_state = {}
+    known_ids = {
+        str(source.get("source_assignment_id"))
+        for record in (previous_state.get("tasks") or {}).values()
+        if isinstance(record, dict) and (record.get("personal") or {}).get("done_observed") is True
+        for source in [record.get("source") or {}]
+        if str(source.get("source_assignment_id") or "").isdigit()
+    }
+    done_observations = []
+    if known_ids:
+        known_courses = [{**course, "rows": [row for row in course.get("rows", [])
+                                                if str(row.get("id")) in known_ids]}
+                         for course in courses]
+        known_courses = [course for course in known_courses if course["rows"]]
+        if known_courses:
+            known_observations = collect_personal_done(page, config, known_courses)
+            done_observations.extend(known_observations)
+            observed_by_id = {str(item["id"]): item["personal_done"]
+                              for item in known_observations
+                              if type(item.get("personal_done")) is bool}
+            for course in courses:
+                for row in course.get("rows", []):
+                    if str(row.get("id")) in observed_by_id:
+                        row["personal_done"] = observed_by_id[str(row["id"])]
+    # Any safe list-row marker was already captured by parse_course_html
+    # without another browser navigation.
     done_observations = [{"id": str(row["id"]), "personal_done": bool(row["personal_done"])}
                          for course in courses for row in course.get("rows", [])
-                         if row.get("personal_done") is True]
+                         if row.get("personal_done") is True] + done_observations
+    # A TickTick completion pulled before collection is written back to
+    # Jupiter's private Done marker here.  The helper only visits verified
+    # detail pages for local-safe records and never submits work.
+    done_writeback = write_personal_done_markers(page, config, courses)
+    done_observations.extend(done_writeback.get("observations", []))
     notices = collect_notices(page, sorted(set(c["teacher"] for c in courses)))
     identity(page, config)
-    done_writeback = {"enabled": False, "changed": 0, "unmatched": [],
-                      "skipped": True,
-                      "reason": "submission tasks use Jupiter/TickTick status; local classroom checks stay local"}
     timezone = config.get("school_timezone", "Asia/Shanghai")
     return {"observed_at": datetime.now(ZoneInfo(timezone)).isoformat(), "timezone": timezone,
             "school_year": re.search(r"\d{4}-\d{2}", config["expected_school_year"]).group(),

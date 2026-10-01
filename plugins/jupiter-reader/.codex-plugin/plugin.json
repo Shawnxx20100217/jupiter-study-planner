@@ -1,0 +1,27 @@
+{
+  "name": "jupiter-reader",
+  "version": "0.1.5",
+  "description": "只读取 Jupiter Ed 作业和截止日期，保存本地变化；不访问 TickTick。",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Jupiter 读取器",
+    "shortDescription": "读取 Jupiter 原始作业，交给 TickTick 同步器",
+    "longDescription": "用独立本机浏览器读取 Jupiter Ed 原始作业和截止日期，保存本地状态；成功后由 TickTick 同步器镜像到“原始任务”，供 GPT 规划“Jupiter任务”。不访问 TickTick、不调用模型。",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive"
+    ],
+    "defaultPrompt": [
+      "读取 Jupiter 最新原始作业",
+      "检查 Jupiter 原始数据是否有变化",
+      "刷新 Jupiter 原始任务，准备交给 TickTick 同步器"
+    ],
+    "brandColor": "#16A085",
+    "composerIcon": "./assets/jupiter-icon.png",
+    "logo": "./assets/jupiter-icon.png"
+  }
+}

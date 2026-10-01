@@ -99,6 +99,76 @@ class SyncControlTests(unittest.TestCase):
         self.assertTrue(result["stopping"])
         self.assertIn("disable", [call[1] for call in self.fake.calls])
 
+    def test_configure_reloads_idle_agents_when_interval_changes(self):
+        sync_control.configure(self.instance, self.python, True, True,
+                               home=self.home, runner=self.fake)
+        self.instance.write_text(json.dumps({"state_dir": str(self.state),
+                                             "report_path": str(self.report),
+                                             "schedule_interval_minutes": 60}))
+        result = sync_control.configure(self.instance, self.python, True, True,
+                                        home=self.home, runner=self.fake)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["reload_deferred"])
+        watch = self.home / "Library/LaunchAgents" / (sync_control._labels(self.instance.resolve())["watch"] + ".plist")
+        ticktick = self.home / "Library/LaunchAgents" / (sync_control._labels(self.instance.resolve())["ticktick"] + ".plist")
+        self.assertEqual(__import__("plistlib").loads(watch.read_bytes())["StartInterval"], 3600)
+        self.assertEqual(__import__("plistlib").loads(ticktick.read_bytes())["StartInterval"], 3600)
+        self.assertIn("bootout", [call[1] for call in self.fake.calls])
+
+    def test_running_agent_defers_reload_without_booting_it_out(self):
+        sync_control.configure(self.instance, self.python, True, True,
+                               home=self.home, runner=self.fake)
+        labels = sync_control._labels(self.instance.resolve())
+        self.fake.running.add(labels["watch"])
+        self.instance.write_text(json.dumps({"state_dir": str(self.state),
+                                             "report_path": str(self.report),
+                                             "schedule_interval_minutes": 60}))
+        before = len(self.fake.calls)
+        result = sync_control.configure(self.instance, self.python, True, True,
+                                        home=self.home, runner=self.fake)
+        self.assertTrue(result["reload_deferred"])
+        self.assertIn(labels["watch"], result["reload_pending_labels"])
+        watch_calls = self.fake.calls[before:]
+        self.assertNotIn("bootout", [call[1] for call in watch_calls
+                                      if len(call) > 2 and labels["watch"] in call[-1]])
+
+    def test_source_mirror_status_uses_source_file_and_keeps_plan_timestamp_separate(self):
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "run-status.json").write_text(json.dumps({
+            "status": "ok", "last_success": "2026-10-01T00:10:00+00:00"
+        }))
+        (self.state / "ticktick-status.json").write_text(json.dumps({
+            "ok": True, "last_success": "2026-09-30T00:01:00+00:00"
+        }))
+        (self.state / "ticktick-source-status.json").write_text(json.dumps({
+            "ok": True, "last_success": "2026-10-01T00:11:00+00:00"
+        }))
+        config = json.loads(self.instance.read_text())
+        config.update({"ticktick_sync_mode": "source_mirror", "automation_paused": True})
+        self.instance.write_text(json.dumps(config))
+        result = sync_control.status(self.instance, home=self.home, runner=self.fake)
+        self.assertEqual(result["mode"], "source_mirror")
+        self.assertEqual(result["ticktick_last_success"], "2026-10-01T00:11:00+00:00")
+        self.assertTrue(result["jupiter_ok"])
+        self.assertTrue(result["ticktick_ok"])
+
+    def test_failed_nested_ticktick_result_is_safe_and_not_green(self):
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "run-status.json").write_text(json.dumps({
+            "status": "ok", "last_success": "2026-10-01T00:10:00+00:00"
+        }))
+        (self.state / "ticktick-source-status.json").write_text(json.dumps({
+            "ok": False, "result": {"ticktick": {"ok": False, "error_code": "api_error",
+                                                     "message": "raw token-like response body"}}
+        }))
+        config = json.loads(self.instance.read_text())
+        config.update({"ticktick_sync_mode": "source_mirror", "automation_paused": True})
+        self.instance.write_text(json.dumps(config))
+        result = sync_control.status(self.instance, home=self.home, runner=self.fake)
+        self.assertEqual(result["ticktick_last_success"], None)
+        self.assertIn("未接受", result["last_error"])
+        self.assertNotIn("raw token", result["last_error"])
+
 
 if __name__ == "__main__":
     unittest.main()

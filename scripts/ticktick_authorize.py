@@ -65,7 +65,7 @@ def clean_token(token):
     return token
 
 
-def select_project(projects, project_id=None, project_name="Jupiter 作业"):
+def select_project(projects, project_id=None, project_name="原始任务"):
     if not isinstance(projects, list):
         raise SetupError("TickTick 返回的清单格式无效。")
     candidates = [p for p in projects if isinstance(p, dict) and p.get("id") and not p.get("closed")]
@@ -85,8 +85,12 @@ def validate_target(token, config, project_id=None, client=None):
     except TickTickError as exc:
         # API error bodies may contain request details; never print them here.
         raise SetupError("TickTick 令牌验证失败，请检查令牌、账号区域与网络。") from exc
+    if config.get("ticktick_sync_mode", nested.get("sync_mode")) == "source_mirror":
+        return select_project(projects,
+                              project_id or config.get("ticktick_source_project_id") or nested.get("source_project_id"),
+                              config.get("ticktick_source_project_name") or nested.get("source_project_name") or "原始任务")
     return select_project(projects, project_id or config.get("ticktick_project_id") or nested.get("project_id"),
-                          config.get("ticktick_project_name") or nested.get("project_name") or "Jupiter 作业")
+                          config.get("ticktick_project_name") or nested.get("project_name") or "原始任务")
 
 
 def private_text(path, text):
@@ -129,10 +133,18 @@ def _save_authorization_locked(instance_path, token, project, method, expires_in
     private_text(token_path, token + "\n")
     atomic_json(path.parent / "ticktick-auth.json", metadata)
     config.update({"ticktick_enabled": True, "ticktick_api_base": API_BASE,
-                   "ticktick_project_id": str(project["id"]), "ticktick_project_name": str(project.get("name", "Jupiter 作业")),
                    "ticktick_token_file": str(token_path)})
+    project_name = str(project.get("name", "原始任务"))
+    nested = config.get("ticktick") if isinstance(config.get("ticktick"), dict) else {}
+    if config.get("ticktick_sync_mode", nested.get("sync_mode")) == "source_mirror":
+        config.update({"ticktick_sync_mode": "source_mirror",
+                       "ticktick_source_project_id": str(project["id"]),
+                       "ticktick_source_project_name": project_name})
+    else:
+        config.update({"ticktick_project_id": str(project["id"]),
+                       "ticktick_project_name": project_name})
     atomic_json(path, config)
-    return {"ok": True, "project_name": config["ticktick_project_name"],
+    return {"ok": True, "project_name": project_name,
             "message": "本机授权已保存，后续定时同步无需调用模型。"}
 
 

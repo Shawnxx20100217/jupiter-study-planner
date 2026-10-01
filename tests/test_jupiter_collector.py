@@ -282,6 +282,21 @@ class IdentityTests(unittest.TestCase):
 
 
 class PersonalDoneTests(unittest.TestCase):
+    def test_writeback_allows_private_classroom_marker_and_rejects_submission_language(self):
+        self.assertTrue(collector._done_writeback_allowed({
+            "status": "unknown", "source_display_status": "ungraded",
+            "completion_mode": "unknown", "title": "Warm-up", "category": "Participation / Attendance"
+        }))
+        for title, category in (("Essay response", "Writing & Essays"),
+                                ("Upload lab report", "Homework"),
+                                ("Forum discussion", "Home/ Classwork"),
+                                ("Practice worksheet", "Homework")):
+            with self.subTest(title=title):
+                self.assertFalse(collector._done_writeback_allowed({
+                    "status": "unknown", "source_display_status": "ungraded",
+                    "completion_mode": "unknown", "title": title, "category": category
+                }))
+
     def test_observations_are_merged_into_matching_rows(self):
         courses = [{"name": "Course A", "rows": [
             {"id": "123", "title": "Practice"}, {"id": "456", "title": "Essay"}]}]
@@ -309,7 +324,9 @@ class PersonalDoneTests(unittest.TestCase):
         """Run the pure page.evaluate function against a fake DOM (no browser)."""
         import shutil
         import subprocess
-        node = shutil.which("node") or "/Users/bugaoxing/Documents/Codex/2026-09-25/new-chat/work/jupiter-runtime/lib/python3.12/site-packages/playwright/driver/node"
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed; browser JavaScript fixture test skipped")
         if not Path(node).exists():
             self.skipTest("bundled JavaScript runtime unavailable")
         script = r'''const source = %s;
@@ -346,6 +363,28 @@ process.stdout.write(JSON.stringify(result));''' % json.dumps(collector.PERSONAL
         self.assertEqual(result["mixed"]["changed"], 0)
         self.assertEqual(result["multiple"]["observations"], [])
         self.assertEqual(result["multiple"]["changed"], 0)
+
+    def test_detail_helper_can_reopen_verified_done_marker(self):
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed; browser JavaScript fixture test skipped")
+        if not Path(node).exists():
+            self.skipTest("bundled JavaScript runtime unavailable")
+        script = r'''const source = %s;
+const done = eval(source);
+const input = {value:'1'};
+const label = {innerText:'Done', getAttribute: key => ({click:"clickcheck('flag')", dochange:"doit('studflagdone')"}[key])};
+global.document = {querySelector: selector => selector.includes('[name="flag"]') ? input : label};
+global.window = {clickcheck: () => { input.value = input.value === '1' ? '' : '1'; }};
+process.stdout.write(JSON.stringify({reopened: done({write:true, desired:false}), checked: done({write:true, desired:true})}));''' % json.dumps(collector.PERSONAL_DONE_DETAIL_SCRIPT)
+        completed = subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["reopened"]["personal_done"], False)
+        self.assertEqual(result["reopened"]["changed"], 1)
+        self.assertEqual(result["checked"]["personal_done"], True)
+        self.assertEqual(result["checked"]["changed"], 1)
 
 
 if __name__ == "__main__":

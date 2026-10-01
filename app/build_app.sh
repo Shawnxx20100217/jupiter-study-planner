@@ -21,8 +21,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>local.jupiter.study-planner</string>
 <key>CFBundleName</key><string>Jupiter 作业管家</string>
 <key>CFBundleDisplayName</key><string>Jupiter 作业管家</string>
-<key>CFBundleShortVersionString</key><string>0.3.0</string>
-<key>CFBundleVersion</key><string>20260930</string>
+<key>CFBundleShortVersionString</key><string>0.3.1</string>
+<key>CFBundleVersion</key><string>20261001</string>
 <key>CFBundleIconFile</key><string>AppIcon.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>

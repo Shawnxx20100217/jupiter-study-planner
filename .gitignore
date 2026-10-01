@@ -11,6 +11,11 @@ venv/
 .DS_Store
 *.app/
 *.zip
+/dist/
+
+# Plugin payloads are generated from the canonical root scripts at release
+# time; never check a copied runtime into either plugin source directory.
+plugins/*/scripts/
 
 # Local reports and runtime data (keep outside this repository)
 reports/

@@ -52,6 +52,56 @@ def state(*sources):
 
 
 class ImportTests(unittest.TestCase):
+    def test_completion_mode_is_conservative_about_submission_work(self):
+        self.assertEqual(imp.completion_mode("Presentation 3", "Participation / Attendance"), "unknown")
+        self.assertEqual(imp.completion_mode("Daily Video 1", "Participation / Attendance"), "unknown")
+        self.assertEqual(imp.completion_mode("Essay response", "Homework"), "submission")
+        self.assertEqual(imp.completion_mode("Forum discussion", "Home/ Classwork"), "submission")
+        self.assertEqual(imp.completion_mode("In-class task", "Participation"), "unknown")
+
+    def test_submission_evidence_overrides_category_or_local_marker(self):
+        for evidence in ({"title": "Upload presentation"},
+                         {"description": "Submit a written answer after class"},
+                         {"notes": "请上传文档"},
+                         {"instructions": "Post to the forum"},
+                         {"requires_submission": True}):
+            with self.subTest(evidence=evidence):
+                self.assertEqual(imp.completion_mode(row(
+                    category="Participation / Attendance", personal_done=False,
+                    completion_mode="local", **evidence)), "submission")
+
+    def test_local_mode_requires_explicit_evidence(self):
+        for evidence in ({"completion_mode": "local"},
+                         {"personal_done": True}, {"personal_done": False}):
+            with self.subTest(evidence=evidence):
+                self.assertEqual(imp.completion_mode(row(**evidence)), "local")
+        self.assertEqual(imp.completion_mode(row(personal_done="false")), "unknown")
+
+    def test_submission_done_marker_remains_personal_not_submission_evidence(self):
+        item = imp.build_snapshot(raw(row(title="Essay response", category="Homework", personal_done=True)), state())["tasks"][0]
+        self.assertEqual(item["completion_mode"], "submission")
+        self.assertTrue(item["personal_done"])
+        self.assertEqual(item["status"], "unknown")
+        with tempfile.TemporaryDirectory() as folder:
+            planner.sync(folder, imp.build_snapshot(raw(row(
+                title="Essay response", personal_done=True)), state()))
+            saved = planner.load_state(folder)["tasks"][item["id"]]
+            self.assertEqual(saved["personal"]["status"], "completed")
+            self.assertEqual(saved["source"]["status"], "unknown")
+
+    def test_absent_done_observation_does_not_invent_an_unchecked_state(self):
+        item = imp.build_snapshot(raw(row()), state())["tasks"][0]
+        self.assertNotIn("personal_done", item)
+        known = imp.build_snapshot(raw(row()), state(source(personal_done=True)))["tasks"][0]
+        self.assertTrue(known["personal_done"])
+        unchecked = imp.build_snapshot(raw(row(personal_done=False)), state(source(personal_done=True)))["tasks"][0]
+        self.assertIs(unchecked["personal_done"], False)
+
+    def test_empty_scored_row_still_requires_identity_title(self):
+        incoming = raw(row(title="", source_display_status="graded"), row(id="124", title="Real task"))
+        with self.assertRaises(imp.JupiterImportError):
+            imp.build_snapshot(incoming, state())
+
     def test_assignment_id_preserves_identity_exact_time_metadata_and_personal_progress(self):
         old = state(source(planning_note="Keep these teacher steps", custom_evidence={"origin": "notice"}))
         incoming = raw(row(title="Renamed fictional project"))

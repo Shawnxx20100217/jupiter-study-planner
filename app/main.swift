@@ -7,6 +7,8 @@ private struct SyncState {
     var stopping = false
     var jupiterLastSuccess: String?
     var ticktickLastSuccess: String?
+    var mode = "plan"
+    var modeLabel = "计划同步"
     var lastError: String?
     var available = false
 
@@ -18,6 +20,8 @@ private struct SyncState {
         stopping = value["stopping"] as? Bool == true
         jupiterLastSuccess = value["jupiter_last_success"] as? String
         ticktickLastSuccess = value["ticktick_last_success"] as? String
+        mode = value["mode"] as? String ?? "plan"
+        modeLabel = value["mode_label"] as? String ?? (mode == "source_mirror" ? "原始同步" : "计划同步")
         if let error = value["last_error"] as? String, !error.isEmpty { lastError = error }
     }
 }
@@ -66,7 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func loadPaths() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let external = home.appendingPathComponent("Library/Application Support/Jupiter Study Planner/paths.json")
-        let candidates = [external, Bundle.main.url(forResource: "paths", withExtension: "json")].compactMap { $0 }
+        let personal = home.appendingPathComponent("JupiterStudyPlanner/paths.json")
+        let candidates = [external, personal, Bundle.main.url(forResource: "paths", withExtension: "json")].compactMap { $0 }
         for url in candidates {
             if let data = try? Data(contentsOf: url),
                let value = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
@@ -75,16 +80,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
         let bundleParent = Bundle.main.bundleURL.deletingLastPathComponent()
-        let projectRoot = bundleParent.deletingLastPathComponent()
         paths["instance"] = paths["instance"] ?? firstFile([
-            home.appendingPathComponent("JupiterStudyPlanner/state/local-instance.json"),
-            projectRoot.appendingPathComponent("work/jupiter-state/local-instance.json")
+            home.appendingPathComponent("JupiterStudyPlanner/state/local-instance.json")
         ])?.path ?? home.appendingPathComponent("JupiterStudyPlanner/state/local-instance.json").path
         paths["state"] = paths["state"] ?? URL(fileURLWithPath: paths["instance"]!).deletingLastPathComponent().path
         paths["scripts"] = paths["scripts"] ?? bundleParent.appendingPathComponent("jupiter-study-planner/scripts").path
         paths["python"] = paths["python"] ?? firstFile([
             home.appendingPathComponent(".jupiter-runtime/bin/python"),
-            projectRoot.appendingPathComponent("work/jupiter-runtime/bin/python"),
             URL(fileURLWithPath: "/usr/bin/python3")
         ])?.path ?? "/usr/bin/python3"
     }
@@ -227,13 +229,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         loginSwitch?.isEnabled = !busy && state.available
         syncButton?.isEnabled = !busy && state.available && state.enabled
         if !busy {
-            statusLabel?.stringValue = !state.available ? "暂时无法读取同步状态" : state.stopping ? "正在停止 · 本轮结束后暂停" : state.enabled ? (state.jobsLoaded ? "后台同步已开启" : "同步已开启，等待后台启动") : "同步已暂停"
-            statusDot?.contentTintColor = !state.available ? .systemOrange : state.stopping ? .systemOrange : state.enabled ? .systemGreen : .tertiaryLabelColor
-            detailLabel?.stringValue = state.lastError ?? "关闭此窗口不影响后台同步"
+            let bothSidesHaveSucceeded = state.jupiterLastSuccess != nil && state.ticktickLastSuccess != nil
+            let healthy = state.enabled && state.jobsLoaded && bothSidesHaveSucceeded && state.lastError == nil
+            statusLabel?.stringValue = !state.available ? "暂时无法读取同步状态" : state.stopping ? "正在停止 · 本轮结束后暂停" : state.enabled ? (healthy ? "后台同步已开启 · \(state.modeLabel)" : "同步已开启，等待两侧成功") : "同步已暂停"
+            statusDot?.contentTintColor = !state.available ? .systemOrange : state.stopping ? .systemOrange : healthy ? .systemGreen : state.enabled ? .systemOrange : .tertiaryLabelColor
+            detailLabel?.stringValue = state.lastError ?? (state.mode == "source_mirror" ? "原始同步只镜像 Jupiter 到 TickTick，不会覆盖学习计划区" : "关闭此窗口不影响后台同步")
             detailLabel?.textColor = state.lastError == nil ? .secondaryLabelColor : .systemOrange
         }
-        let latest = state.ticktickLastSuccess ?? state.jupiterLastSuccess
-        lastSyncLabel?.stringValue = latest.map { "最近同步  ·  \(displayDate($0))" } ?? "尚无成功同步记录"
+        let jupiter = state.jupiterLastSuccess.map { displayDate($0) } ?? "未成功"
+        let ticktick = state.ticktickLastSuccess.map { displayDate($0) } ?? "未成功"
+        lastSyncLabel?.stringValue = "Jupiter 读取  ·  \(jupiter)\nTickTick 写入  ·  \(ticktick)"
     }
 
     private func displayDate(_ text: String) -> String {

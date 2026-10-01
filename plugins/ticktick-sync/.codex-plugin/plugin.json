@@ -1,0 +1,28 @@
+{
+  "name": "ticktick-sync",
+  "version": "0.1.5",
+  "description": "把最近一次本地 Jupiter 作业数据幂等同步到 TickTick；不打开浏览器。",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "TickTick 同步器",
+    "shortDescription": "把 Jupiter 原始事实同步给 GPT 规划",
+    "longDescription": "读取最近一次成功保存的 Jupiter 原始事实，幂等写入 TickTick“原始任务”，并拉回个人完成状态；不改写“Jupiter任务”计划清单。GPT 随后按 jupiter:<id> 做差异规划，并可合并 SAT、托福和其他长期目标。",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "把最新 Jupiter 原始事实同步到 TickTick",
+      "检查原始任务同步状态",
+      "拉回 TickTick 的个人完成状态"
+    ],
+    "brandColor": "#4772FA",
+    "composerIcon": "./assets/jupiter-icon.png",
+    "logo": "./assets/jupiter-icon.png"
+  }
+}

@@ -67,6 +67,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("import_metadata", self.read("state.json"))
         self.assertEqual((self.state / "state.json").stat().st_mode & 0o777, 0o600)
 
+    def test_source_only_never_contacts_ticktick(self):
+        self.instance.write_text(json.dumps({"state_dir": str(self.state),
+                                             "report_path": str(self.report),
+                                             "ticktick_enabled": True}))
+        with patch.object(runtime, "sync_ticktick",
+                          side_effect=AssertionError("source-only reader contacted TickTick")):
+            result = self.execute(source_only=True)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("ticktick", result)
+        self.assertTrue((self.state / "state.json").is_file())
+
     def test_unchanged_scan_does_not_repeat_notification(self):
         self.execute()
         self.snapshot["observed_at"] = "2026-09-25T09:00:00+00:00"
@@ -408,16 +419,27 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("StartCalendarInterval", value)
         self.assertFalse(self.state.exists())
 
-    def test_generate_watch_plist_polls_jupiter_every_fifteen_minutes(self):
+    def test_generate_watch_plist_polls_jupiter_hourly_by_default(self):
         output = self.root / "watch.plist"
         result = runtime.generate_launch_agent(self.instance, sys.executable, output, mode="watch")
         self.assertFalse(result["enabled"])
         self.assertEqual(result["mode"], "watch")
         value = plistlib.loads(output.read_bytes())
         self.assertEqual(value["ProgramArguments"][2:], ["run", "--instance", str(self.instance)])
-        self.assertEqual(value["StartInterval"], 900)
+        self.assertEqual(value["StartInterval"], 3600)
         self.assertTrue(value["RunAtLoad"])
         self.assertNotIn("StartCalendarInterval", value)
+
+    def test_configured_interval_drives_watch_and_ticktick_hourly(self):
+        self.instance.write_text(json.dumps({"state_dir": str(self.state),
+                                             "report_path": str(self.report),
+                                             "schedule_interval_minutes": 60}))
+        watch = self.root / "watch-hourly.plist"
+        ticktick = self.root / "ticktick-hourly.plist"
+        runtime.generate_launch_agent(self.instance, sys.executable, watch, mode="watch")
+        runtime.generate_launch_agent(self.instance, sys.executable, ticktick, mode="ticktick")
+        self.assertEqual(plistlib.loads(watch.read_bytes())["StartInterval"], 3600)
+        self.assertEqual(plistlib.loads(ticktick.read_bytes())["StartInterval"], 3600)
 
     def test_user_can_pause_and_resume_background_automation(self):
         self.instance.write_text(json.dumps({"state_dir": str(self.state),

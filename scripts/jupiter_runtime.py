@@ -3,8 +3,12 @@
 
 The collector owns authenticated browser access. This module never opens a browser
 for ``remind``, contacts an AI service, submits work, or enables a launch agent.
-Sync schedules use the Mac's local timezone at 07:00 and 17:00; the independent
-``remind`` schedule checks the saved plan every 30 minutes while the computer is available.
+The legacy ``sync`` schedule uses the Mac's local timezone at 07:00 and 17:00.
+The user-facing ``watch`` and ``ticktick`` schedules use one configured interval
+when ``schedule_interval_minutes`` is present (for example, 60 means hourly).
+New instances use an hourly interval for both ``watch`` and ``ticktick``; an
+explicit ``schedule_interval_minutes`` value overrides it. The independent ``remind`` schedule checks the
+saved plan every 30 minutes while the computer is available.
 """
 import argparse
 from contextlib import contextmanager, nullcontext
@@ -731,11 +735,15 @@ def remind(instance_path, now=None, dry_run=False):
         return {"ok": False, "error_code": "reminder_failed", "message": "未能检查截止提醒；旧计划已保留。"}
 
 
-def run(instance_path, collector=None, normalize=None, now=None, dry_run=False):
+def run(instance_path, collector=None, normalize=None, now=None, dry_run=False, source_only=False):
     """Collect/normalize/plan with injectable pure-Python test hooks.
 
     dry_run still calls the collector but does not modify planner data, reports,
     status, or notification files. Browser session internals belong to collector.
+    ``source_only`` is the deterministic Jupiter-reader mode: it saves the
+    locally observed Jupiter data but never contacts TickTick.  Keeping this
+    switch here, instead of duplicating the collector pipeline, guarantees the
+    reader and publisher plugins use the same normalization and state rules.
     """
     at = (planner.instant(now) if isinstance(now, str) else (now or datetime.now(timezone.utc))).isoformat()
     try:
@@ -757,7 +765,7 @@ def run(instance_path, collector=None, normalize=None, now=None, dry_run=False):
             # The saved plan is the only input; a failed pre-sync never blocks
             # the authoritative Jupiter collection.
             pre_ticktick = None
-            if tick_enabled and not dry_run:
+            if tick_enabled and not source_only and not dry_run:
                 pre_ticktick = sync_ticktick(instance_path, now=planner.instant(at))
             stage = "collect"
             try:
@@ -810,7 +818,8 @@ def run(instance_path, collector=None, normalize=None, now=None, dry_run=False):
                               "deadline_reminders": len(deadline_items),
                               "new_notifications": int(notify)}
                     if dry_run:
-                        result["ticktick"] = sync_ticktick(instance_path, now=planner.instant(at), dry_run=True)
+                        if not source_only:
+                            result["ticktick"] = sync_ticktick(instance_path, now=planner.instant(at), dry_run=True)
                         return result
                     notifications = read(directory / "notifications.json", [])
                     if any(changes.values()):
@@ -856,12 +865,12 @@ def run(instance_path, collector=None, normalize=None, now=None, dry_run=False):
                     # TickTick is an optional downstream publisher.  A remote
                     # outage must never roll back the locally verified Jupiter
                     # snapshot or make a successful source sync look failed.
-                    if tick_enabled:
+                    if tick_enabled and not source_only:
                         result["ticktick"] = sync_ticktick(instance_path, now=planner.instant(at))
                         if pre_ticktick and pre_ticktick.get("remote_completed"):
                             result["ticktick"]["pre_sync_remote_completed"] = pre_ticktick["remote_completed"]
                     if any(changes.values()):
-                        _system_notification("Jupiter 作业管家", summary, read(instance_path, {}))
+                        _system_notification("Jupiter 任务同步", summary, read(instance_path, {}))
                     for reminder in deadline_items:
                         _system_notification(reminder["title"], reminder["message"], read(instance_path, {}))
                     return result
@@ -901,18 +910,31 @@ def generate_launch_agent(instance_path, python, output, mode="sync"):
     arguments = [str(python), str(Path(__file__).resolve()),
                  ("run" if mode in {"sync", "watch"} else "remind" if mode == "remind" else "sync-ticktick"),
                  "--instance", str(instance_path)]
+    # ``watch`` and ``ticktick`` share the user's configured polling interval.
+    # Keep per-mode defaults for old private instances that predate the setting.
+    configured_interval = read(instance_path, {}).get("schedule_interval_minutes")
+    if isinstance(configured_interval, bool):
+        configured_interval = None
+    try:
+        configured_interval = int(configured_interval)
+    except (TypeError, ValueError):
+        configured_interval = None
+    if configured_interval is not None and configured_interval <= 0:
+        configured_interval = None
+    watch_minutes = configured_interval or 60
+    ticktick_minutes = configured_interval or 60
     schedule = ({"StartCalendarInterval": [{"Hour": 7, "Minute": 0}, {"Hour": 17, "Minute": 0}],
                  "RunAtLoad": False,
                  "schedule": "每天本机当地时间 07:00、17:00；仅生成配置，尚未启用。"}
                 if mode == "sync" else
-                {"StartInterval": 15 * 60, "RunAtLoad": True,
-                 "schedule": "每 15 分钟检查一次 Jupiter；有变化才更新看板并发布到 TickTick。"}
+                {"StartInterval": watch_minutes * 60, "RunAtLoad": True,
+                 "schedule": f"每 {watch_minutes} 分钟检查一次 Jupiter；有变化才更新看板并发布到 TickTick。"}
                 if mode == "watch" else
                 {"StartInterval": 30 * 60, "RunAtLoad": True,
                  "schedule": "每 30 分钟检查一次本地计划；仅生成配置，尚未启用。"})
     if mode == "ticktick":
-        schedule = {"StartInterval": 30 * 60, "RunAtLoad": True,
-                    "schedule": "每 30 分钟把最近一次成功的 Jupiter 计划同步到 TickTick；仅生成配置，尚未启用。"}
+        schedule = {"StartInterval": ticktick_minutes * 60, "RunAtLoad": True,
+                    "schedule": f"每 {ticktick_minutes} 分钟把最近一次成功的 Jupiter 计划同步到 TickTick；仅生成配置，尚未启用。"}
     content = {"Label": label,
                "ProgramArguments": arguments,
                "WorkingDirectory": str(Path(__file__).resolve().parent.parent),
@@ -941,6 +963,8 @@ def main(argv=None):
     running = commands.add_parser("run", help="Collect and update locally without model calls")
     running.add_argument("--instance", required=True, type=Path)
     running.add_argument("--dry-run", action="store_true", help="Collect/validate, print counts; do not update planner files")
+    running.add_argument("--source-only", action="store_true",
+                         help="Read and save Jupiter data without contacting TickTick")
     reminding = commands.add_parser("remind", help="Check saved deadlines without opening a browser")
     reminding.add_argument("--instance", required=True, type=Path)
     reminding.add_argument("--dry-run", action="store_true", help="Check reminders without updating local files")
@@ -969,10 +993,10 @@ def main(argv=None):
     generating.add_argument("--python", required=True, type=Path)
     generating.add_argument("--output", required=True, type=Path)
     generating.add_argument("--mode", choices=("sync", "watch", "remind", "ticktick"), default="sync",
-                            help="sync=07:00/17:00 collection; watch=every 15 minutes; remind=local deadline reminders; ticktick=every 30 minutes publisher")
+                            help="sync=07:00/17:00 legacy collection; watch/ticktick=the configured interval (default 60 minutes); remind=local deadline reminders")
     args = parser.parse_args(argv)
     if args.command == "run":
-        result = run(args.instance, dry_run=args.dry_run)
+        result = run(args.instance, dry_run=args.dry_run, source_only=args.source_only)
     elif args.command == "remind":
         result = remind(args.instance, dry_run=args.dry_run)
     elif args.command == "sync-ticktick":

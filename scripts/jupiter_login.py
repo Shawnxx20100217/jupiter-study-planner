@@ -2,8 +2,8 @@
 """Launch a visible, dedicated macOS Chrome profile for Jupiter sign-in.
 
 This command only starts Chrome. It never reads another browser's profile,
-imports cookies, receives a password, or submits a form. Close the window after
-signing in; the collector reuses the same profile directory later.
+imports cookies, receives a password, or submits a form. Quit the dedicated
+Chrome instance after signing in; the collector reuses its profile later.
 """
 import argparse
 import json
@@ -14,7 +14,8 @@ import shutil
 import subprocess
 import sys
 
-from jupiter_collector import CollectorError, LOGIN_URL, config_at
+from jupiter_collector import CollectorError, LOGIN_URL, browser_lock, config_at
+from jupiter_browser_session import ensure_profile_idle
 
 
 DEFAULT_CHROME = "Google Chrome"
@@ -49,13 +50,19 @@ def launch_visible_login(instance_path, chrome_app=DEFAULT_CHROME, runner=None):
     run = runner or subprocess.run
     command = [opener, "-na", chrome_app, "--args",
                "--user-data-dir=" + str(profile), "--new-window", LOGIN_URL]
-    try:
-        run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    except (OSError, subprocess.CalledProcessError) as error:
-        raise CollectorError("chrome_launch_failed", "Could not launch the dedicated Chrome login window.") from error
+    with browser_lock(config):
+        ensure_profile_idle(profile)
+        try:
+            run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise CollectorError("chrome_launch_failed", "Could not launch the dedicated Chrome login window.") from error
+        # A previous snapshot must never overwrite cookies from this new login.
+        # Remove it only after Chrome accepts the launch, while collection is
+        # excluded by the same lock. Chrome retains the dedicated profile.
+        (state / "collector-session.json").unlink(missing_ok=True)
     return {"ok": True, "login_url": LOGIN_URL, "profile_dir": str(profile),
             "dedicated_profile": True, "password_read": False, "cookies_imported": False,
-            "message": "请在新窗口自行登录 Jupiter；完成后关闭窗口。下次 collector 会复用该专用 profile。"}
+            "message": "请在新窗口自行登录 Jupiter；完成后退出这个专用 Chrome（⌘Q），再同步。程序会复用该专用登录状态。"}
 
 
 def main(argv=None):

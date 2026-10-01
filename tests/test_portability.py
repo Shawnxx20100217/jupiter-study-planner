@@ -4,11 +4,12 @@ import stat
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from init_instance import initialize
-from package_share import package
+from package_share import package, package_plugin
 
 
 IDENTITY = {"expected_student": "Example Student", "expected_school_year": "Example School 2026-27",
@@ -33,6 +34,28 @@ class InstanceTests(unittest.TestCase):
             self.assertFalse((state / "state.json").exists())
             self.assertFalse((state / "run-status.json").exists())
             self.assertFalse(result["schedule_enabled"])
+            self.assertEqual(config["schedule_interval_minutes"], 60)
+            self.assertEqual(config["ticktick_sync_mode"], "source_mirror")
+            self.assertEqual(config["ticktick_source_project_name"], "原始任务")
+            paths_file = Path(result["paths"])
+            paths = json.loads(paths_file.read_text())
+            self.assertEqual(paths["instance"], result["instance"])
+            self.assertEqual(paths["state"], str(state))
+            self.assertEqual(paths["scripts"], str((base / "plugin/scripts").resolve()))
+            self.assertEqual(paths["reports"], result["report_directory"])
+            self.assertEqual(stat.S_IMODE(paths_file.stat().st_mode), 0o600)
+
+    def test_paths_preserve_virtual_environment_python_symlink(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            venv_python = base / "venv/bin/python"
+            venv_python.parent.mkdir(parents=True)
+            venv_python.symlink_to(sys.executable)
+            with patch("init_instance.sys.executable", str(venv_python)):
+                result = initialize(base / "personal", IDENTITY, base / "plugin")
+            paths = json.loads(Path(result["paths"]).read_text())
+            self.assertEqual(paths["python"], str(venv_python.absolute()))
+            self.assertNotEqual(paths["python"], str(venv_python.resolve()))
 
     def test_existing_data_never_overwritten(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -85,10 +108,44 @@ class PackageTests(unittest.TestCase):
             with zipfile.ZipFile(archive) as handle:
                 self.assertEqual(set(handle.namelist()), {"jupiter-study-planner/" + name for name in allowed})
 
-    def test_manifest_required(self):
+    def test_source_tree_required(self):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaises(ValueError):
                 package(temp, Path(temp) / "share.zip")
+
+    def test_plugin_archive_uses_canonical_root_scripts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            (root / "scripts").mkdir(parents=True)
+            (root / "scripts/runtime.py").write_text("canonical runtime")
+            (root / "requirements-collector.txt").write_text("scrapling==0.4.15")
+            (root / "assets/dashboard.html").parent.mkdir(parents=True)
+            (root / "assets/dashboard.html").write_text("dashboard")
+            plugin = root / "plugins/jupiter-reader"
+            (plugin / ".codex-plugin").mkdir(parents=True)
+            (plugin / ".codex-plugin/plugin.json").write_text('{"name":"jupiter-reader"}')
+            (plugin / "assets").mkdir()
+            (plugin / "assets/icon.svg").write_text("<svg/>")
+            (plugin / "skills/jupiter-reader").mkdir(parents=True)
+            (plugin / "skills/jupiter-reader/SKILL.md").write_text("skill")
+            # A stale copied file must never win over the canonical root file.
+            (plugin / "scripts").mkdir()
+            (plugin / "scripts/runtime.py").write_text("stale duplicate")
+
+            archive = Path(temp) / "jupiter-reader.zip"
+            count = package_plugin(root, "jupiter-reader", archive)
+            self.assertEqual(count, 6)
+            with zipfile.ZipFile(archive) as handle:
+                names = set(handle.namelist())
+                self.assertEqual(names, {
+                    "jupiter-reader/.codex-plugin/plugin.json",
+                    "jupiter-reader/assets/icon.svg",
+                    "jupiter-reader/assets/dashboard.html",
+                    "jupiter-reader/skills/jupiter-reader/SKILL.md",
+                    "jupiter-reader/scripts/runtime.py",
+                    "jupiter-reader/requirements-collector.txt",
+                })
+                self.assertEqual(handle.read("jupiter-reader/scripts/runtime.py"), b"canonical runtime")
 
 
 if __name__ == "__main__":

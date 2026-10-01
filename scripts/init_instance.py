@@ -53,9 +53,12 @@ def initialize(data_dir, identity, plugin_root=PLUGIN_ROOT):
               "system_notifications": True,
               "deadline_reminders_enabled": True,
               "deadline_reminder_minutes": [1440, 120, 30],
+              "schedule_interval_minutes": 60,
               "ticktick_enabled": False,
               "ticktick_api_base": "https://api.ticktick.com/open/v1",
-              "ticktick_project_name": "Jupiter 作业",
+              "ticktick_sync_mode": "source_mirror",
+              "ticktick_source_project_name": "原始任务",
+              "ticktick_project_name": "原始任务",
               "ticktick_token_file": str(state / "ticktick-token"),
               "ticktick_reminder_minutes": [1440, 120, 30],
               "jupiter_done_writeback_enabled": False,
@@ -67,7 +70,17 @@ def initialize(data_dir, identity, plugin_root=PLUGIN_ROOT):
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         json.dump(config, handle, ensure_ascii=False, indent=2)
         handle.write("\n")
+    paths_file = directory / "paths.json"
+    paths = {"instance": str(instance), "state": str(state),
+             # Resolving this symlink can bypass the virtual environment.
+             "python": str(Path(sys.executable).expanduser().absolute()),
+             "scripts": str(plugin_root / "scripts"), "reports": str(reports)}
+    descriptor = os.open(paths_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(paths, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
     return {"ok": True, "instance": str(instance), "report_directory": str(reports),
+            "paths": str(paths_file),
             "logged_in": False, "synced": False, "schedule_enabled": False}
 
 

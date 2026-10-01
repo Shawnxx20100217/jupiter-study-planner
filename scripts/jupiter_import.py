@@ -23,6 +23,33 @@ _NOTICE_KEYS = ("id", "author", "date_text", "title", "text", "read", "unread", 
 _NOTICE_CONTENT_KEYS = ("id", "author", "title", "text")
 
 
+def completion_mode(row_or_title, category=None):
+    """Classify Jupiter writeback eligibility, never personal completion itself.
+
+    Submission evidence takes precedence over a personal Done control or an
+    explicit local designation. A course category or a title such as
+    "presentation" cannot establish that no submission is required.
+    """
+    row = row_or_title if isinstance(row_or_title, dict) else {
+        "title": row_or_title, "category": category}
+    text = " ".join(str(row.get(field) or "") for field in
+                    ("title", "category", "description", "notes", "instructions",
+                     "requirements", "submission_instructions")).casefold()
+    submission = re.search(
+        r"\b(?:submit(?:ted|ting|s)?|submission|upload(?:ed|ing|s)?|"
+        r"turn\s+in|hand\s+in|attach(?:ment|ments|ed|ing)?|"
+        r"document|essay|paper|report|forum|discussion|response|worksheet|"
+        r"written\s+answers?)\b|提交|上传|论坛|讨论帖|书面答复|文档", text)
+    if (row.get("requires_submission") is True or
+            row.get("completion_mode") == "submission" or submission):
+        return "submission"
+    # Only collector/user supplied designations or an observed private control
+    # can authorize Jupiter writeback. Missing evidence remains unknown.
+    if row.get("completion_mode") == "local" or type(row.get("personal_done")) is bool:
+        return "local"
+    return "unknown"
+
+
 def _instant(value):
     result = datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else value
     if not isinstance(result, datetime) or result.tzinfo is None or result.utcoffset() is None:
@@ -228,6 +255,7 @@ def build_snapshot(raw, state, now=None):
             consumed.add(task_id)
             old = sources.get(task_id, {})
             display = row.get("source_display_status", "unknown")
+            mode = completion_mode(row)
             if not old and display == "graded":
                 skipped += 1  # Do not import a course's entire scored history.
                 continue
@@ -236,8 +264,12 @@ def build_snapshot(raw, state, now=None):
                 source.pop(field, None)
             source.update(id=task_id, course=name, title=title, source_assignment_id=assignment_id,
                           source_display_status=display, category=row.get("category", ""),
-                          source_teacher=course.get("teacher"), source_row_date=row.get("date"),
-                          personal_done=bool(row.get("personal_done", False)))
+                          completion_mode=mode,
+                          source_teacher=course.get("teacher"), source_row_date=row.get("date"))
+            # A private tick is personal bookkeeping, even on submission work.
+            # No observation is not evidence of an unchecked control.
+            if type(row.get("personal_done")) is bool:
+                source["personal_done"] = row["personal_done"]
             source.update(_deadline(row, old, raw.get("school_year"), zone, review, task_id))
             source.setdefault("source_url", "https://login.jupitered.com/")
             source.setdefault("kind", "assignment")
