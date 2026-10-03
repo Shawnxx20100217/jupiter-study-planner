@@ -1,6 +1,6 @@
 {
   "name": "ticktick-sync",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "把最近一次本地 Jupiter 作业数据幂等同步到 TickTick；不打开浏览器。",
   "author": {
     "name": "Local developer"
@@ -21,7 +21,7 @@
       "检查原始任务同步状态",
       "拉回 TickTick 的个人完成状态"
     ],
-    "brandColor": "#4772FA",
+    "brandColor": "#4F7CFF",
     "composerIcon": "./assets/jupiter-icon.png",
     "logo": "./assets/jupiter-icon.png"
   }

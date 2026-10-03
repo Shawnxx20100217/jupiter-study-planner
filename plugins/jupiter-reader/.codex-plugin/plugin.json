@@ -1,6 +1,6 @@
 {
   "name": "jupiter-reader",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "只读取 Jupiter Ed 作业和截止日期，保存本地变化；不访问 TickTick。",
   "author": {
     "name": "Local developer"
@@ -20,7 +20,7 @@
       "检查 Jupiter 原始数据是否有变化",
       "刷新 Jupiter 原始任务，准备交给 TickTick 同步器"
     ],
-    "brandColor": "#16A085",
+    "brandColor": "#163C37",
     "composerIcon": "./assets/jupiter-icon.png",
     "logo": "./assets/jupiter-icon.png"
   }
