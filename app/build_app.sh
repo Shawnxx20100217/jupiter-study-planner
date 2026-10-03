@@ -35,4 +35,19 @@ if command -v codesign >/dev/null 2>&1; then
   codesign --force --deep --sign - "$OUT"
   codesign --verify --deep --strict "$OUT"
 fi
+
+# macOS Tahoe may wrap a traditional .icns in a system material tile. Apply
+# the selected transparent artwork as Finder's local custom icon after the
+# bundle is signed so the installed app shows the artwork at full size.
+# This is intentionally a local presentation layer; distributed source and
+# plugin packages still carry the normal signed build inputs.
+if [ "${JUPITER_APPLY_FINDER_ICON:-1}" = "1" ] && [ -f "$PLUGIN_ROOT/assets/jupiter-icon.png" ] \
+    && command -v swiftc >/dev/null 2>&1; then
+  ICON_HELPER="$(mktemp -t jupiter-apply-icon).swift"
+  ICON_BIN="${ICON_HELPER%.swift}"
+  cp "$SCRIPT_DIR/apply_finder_icon.swift" "$ICON_HELPER"
+  swiftc "$ICON_HELPER" -o "$ICON_BIN" -framework AppKit
+  "$ICON_BIN" "$PLUGIN_ROOT/assets/jupiter-icon.png" "$OUT"
+  rm -f "$ICON_HELPER" "$ICON_BIN"
+fi
 printf '%s\n' "$OUT"

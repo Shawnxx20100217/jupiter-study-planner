@@ -10,6 +10,14 @@
 
 当前版本先按“本人可访问账户、自己的学校页面”验证。跨学校页面、家长账户和不同登录流程需要自行检查。
 
+## 0. 构建 macOS 控制窗口（可选）
+
+```bash
+JUPITER_APP_OUT_DIR="$HOME/Applications" ./app/build_app.sh
+```
+
+构建完成后，应用会使用透明的大主体图标；脚本会在签名完成后设置本机 Finder 图标层，以绕过 macOS Tahoe 对传统 `.icns` 的灰色底板处理。这个设置只影响当前 Mac 的显示，不会上传账户数据。若只需要严格的签名验证，可设置 `JUPITER_APPLY_FINDER_ICON=0`。
+
 ## 1. 安装依赖
 
 ```bash

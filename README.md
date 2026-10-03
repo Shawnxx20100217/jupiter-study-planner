@@ -25,6 +25,14 @@ Jupiter 读取器 → TickTick「原始任务」 → GPT 规划 → TickTick「J
 - `app/`：可选的 macOS 同步控制窗口；不包含账户、浏览器会话或任务数据。
 - `examples/`、`references/`、`tests/`：虚构配置、数据约定和离线回归测试。
 
+## 构建 macOS 控制窗口
+
+```bash
+JUPITER_APP_OUT_DIR="$HOME/Applications" ./app/build_app.sh
+```
+
+构建脚本会先完成应用签名，再把透明的笔记本同步图标写入本机 Finder 的显示层，这样 macOS Tahoe 不会给传统 `.icns` 自动套灰色底板。这个 Finder 图标层只属于本机安装，不会把个人数据带进仓库；如果需要保留严格的代码签名检查，可用 `JUPITER_APPLY_FINDER_ICON=0` 构建。
+
 ## 本机运行
 
 先创建虚拟环境并安装采集依赖：
